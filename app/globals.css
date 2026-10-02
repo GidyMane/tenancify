@@ -4,6 +4,11 @@
 
 @custom-variant dark (&:is(.dark *));
 
+.houses-only-view > .grid.gap-4,
+.houses-only-view > section:not(.house-directory-panel) {
+  display: none;
+}
+
 .sidebar-scroll {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
