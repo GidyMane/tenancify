@@ -4,6 +4,10 @@
 
 @custom-variant dark (&:is(.dark *));
 
+.houses-only-view .rent-status-section {
+  display: none;
+}
+
 .sidebar-scroll {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
