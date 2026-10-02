@@ -59,7 +59,7 @@ export function HouseFormDialog({ house, onSave, onClose }: { house: House | nul
           <Field label="Water meter number">
             <input value={details.waterMeterNumber} onChange={set('waterMeterNumber')} className={inputClass} />
           </Field>
-          <Field label="Electricity meter number">
+          <Field label="Electricity token meter">
             <input value={details.electricityMeterNumber} onChange={set('electricityMeterNumber')} className={inputClass} />
           </Field>
         </div>

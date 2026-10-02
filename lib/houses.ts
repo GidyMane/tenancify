@@ -31,6 +31,7 @@ export type Assignment = {
   monthlyRent: number
   depositRequired: number
   startDate: string
+  openingWaterReading?: number
 }
 
 
@@ -47,7 +48,8 @@ export const statusMeta = (status: HouseStatus) => houseStatuses.find((item) => 
 
 export { formatKsh } from '@/lib/format'
 
-// The API has no electricity-meter column, so it is kept in the house's JSON metadata.
+// The API has no electricity-meter column; existing records keep the prepaid token meter in JSON metadata under this key.
+const TOKEN_METER_KEY = 'token-meter-number'
 function parseMetadata(value: unknown): Record<string, unknown> {
   if (typeof value === 'string') {
     try { return parseMetadata(JSON.parse(value)) } catch { return {} }
@@ -67,7 +69,7 @@ function toHouse(house: ApiHouse): House {
     unitNumber: house.unitNumber,
     houseType: house.houseType ?? '',
     waterMeterNumber: house.waterMeterNumber ?? '',
-    electricityMeterNumber: typeof metadata.electricityMeterNumber === 'string' ? metadata.electricityMeterNumber : '',
+    electricityMeterNumber: String(metadata[TOKEN_METER_KEY] ?? metadata.electricityMeterNumber ?? ''),
     defaultMonthlyRent: rent,
     defaultDepositAmount: Number(house.defaultDepositAmount ?? rent) || 0,
     notes: house.notes ?? '',
@@ -85,7 +87,7 @@ function toPayload(details: HouseDetails, metadata: Record<string, unknown>) {
     defaultMonthlyRent: details.defaultMonthlyRent,
     defaultDepositAmount: details.defaultDepositAmount > 0 ? details.defaultDepositAmount : undefined,
     notes: details.notes.trim(),
-    metadata: JSON.stringify({ ...metadata, electricityMeterNumber: details.electricityMeterNumber.trim() }),
+    metadata: JSON.stringify({ ...metadata, [TOKEN_METER_KEY]: details.electricityMeterNumber.trim() }),
   }
 }
 
@@ -149,8 +151,9 @@ export function useHouses() {
     if (mode === 'live') {
       const current = await api.activeTenancy(house.id).catch(notFoundAsNull)
       if (current) await api.moveOut(current.id, { actualEndDate: assignment.startDate })
-      await api.moveIn({ houseId: house.id, tenantId: chosen.id, monthlyRent: assignment.monthlyRent, depositRequired: assignment.depositRequired, startDate: assignment.startDate })
+      await api.moveIn({ houseId: house.id, tenantId: chosen.id, monthlyRent: assignment.monthlyRent, depositRequired: assignment.depositRequired, startDate: assignment.startDate, openingWaterReading: assignment.openingWaterReading })
       await live.mutate()
+      await billing.moveIn({ houseId: house.id, unitNumber: house.unitNumber, tenantId: chosen.id, tenantName: chosen.fullName, tenantPhone: chosen.phone, monthlyRent: assignment.monthlyRent, depositRequired: assignment.depositRequired, startDate: assignment.startDate })
     } else {
       await updateDemo(house.id, { status: 'OCCUPIED', tenant: { name: chosen.fullName, phone: chosen.phone } })
       // Mirror the API's move-in: close the old tenancy, open the new one with its deposit charge.

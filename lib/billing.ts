@@ -1,14 +1,16 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import useSWR from 'swr'
+import { api, type ApiHouse } from '@/lib/api/client'
+import { useDataSource } from '@/lib/data-source'
 import { addMonths, currentPeriod, periodLabel, today } from '@/lib/format'
 
 // ─── Model ──────────────────────────────────────────────────────────────
 // Mirrors the API: a Tenancy freezes rent and deposit at move-in, Charges are
 // what a tenancy owes, and Payments are allocated against charges.
 
-export type ChargeType = 'RENTDEPOSIT' | 'RENT' | 'WATER' | 'TRASH' | 'OTHER'
+export type ChargeType = 'RENTDEPOSIT' | 'WATERDEPOSIT' | 'TRASHDEPOSIT' | 'SECURITYDEPOSIT' | 'RENT' | 'WATER' | 'TRASH' | 'SECURITY' | 'SERVICEFEE' | 'OTHER'
 export type PaymentMethod = 'MPESA' | 'BANK' | 'CASH' | 'OTHER'
 
 export type Tenancy = {
@@ -61,9 +63,14 @@ export type BillingState = { tenancies: Tenancy[]; charges: Charge[]; payments: 
 
 export const chargeTypes: Record<ChargeType, { label: string; tone: string; bar: string }> = {
   RENTDEPOSIT: { label: 'Deposit', tone: 'bg-violet-50 text-violet-700', bar: 'bg-violet-500' },
+  WATERDEPOSIT: { label: 'Water deposit', tone: 'bg-violet-50 text-violet-700', bar: 'bg-violet-500' },
+  TRASHDEPOSIT: { label: 'Garbage deposit', tone: 'bg-violet-50 text-violet-700', bar: 'bg-violet-500' },
+  SECURITYDEPOSIT: { label: 'Security deposit', tone: 'bg-violet-50 text-violet-700', bar: 'bg-violet-500' },
   RENT: { label: 'Rent', tone: 'bg-blue-50 text-blue-700', bar: 'bg-blue-500' },
   WATER: { label: 'Water', tone: 'bg-cyan-50 text-cyan-700', bar: 'bg-cyan-500' },
   TRASH: { label: 'Garbage', tone: 'bg-orange-50 text-orange-700', bar: 'bg-orange-500' },
+  SECURITY: { label: 'Security', tone: 'bg-slate-100 text-slate-600', bar: 'bg-slate-400' },
+  SERVICEFEE: { label: 'Service fee', tone: 'bg-slate-100 text-slate-600', bar: 'bg-slate-400' },
   OTHER: { label: 'Other', tone: 'bg-slate-100 text-slate-600', bar: 'bg-slate-400' },
 }
 
@@ -72,7 +79,7 @@ export const paymentMethods: Record<PaymentMethod, string> = { MPESA: 'M-Pesa', 
 export const chargeLabel = (charge: Charge) => `${chargeTypes[charge.type].label}${charge.period ? ` · ${periodLabel(charge.period, 'short')}` : ''}`
 
 // Deposits first, then rent, then water, then everything else; oldest first within a tier.
-const PRIORITY: Record<ChargeType, number> = { RENTDEPOSIT: 0, RENT: 1, WATER: 2, TRASH: 3, OTHER: 3 }
+const PRIORITY: Record<ChargeType, number> = { RENTDEPOSIT: 0, WATERDEPOSIT: 0, TRASHDEPOSIT: 0, SECURITYDEPOSIT: 0, RENT: 1, WATER: 2, TRASH: 3, SECURITY: 3, SERVICEFEE: 3, OTHER: 3 }
 
 // ─── Ledger: everything derived from the raw state ────────────────────────
 
@@ -230,7 +237,7 @@ export function billWater(state: BillingState, period: string, entries: ReadingI
   }, state)
 }
 
-export type PaymentInput = { tenancyId: string; amount: number; paidAt: string; method: PaymentMethod; reference: string; notes: string; allocations?: Allocation[] }
+export type PaymentInput = { tenancyId: string; amount: number; paidAt: string; method: PaymentMethod; reference: string; notes: string; allocations?: Allocation[]; confirmDuplicate?: boolean }
 
 export function recordPayment(state: BillingState, input: PaymentInput): { state: BillingState; payment: Payment } {
   const ledger = buildLedger(state)
@@ -308,32 +315,207 @@ export function seedBilling(): BillingState {
   return state
 }
 
+// ─── Live data: the API's tenancies, charges and payments mapped onto the same model ───
+
+/** A billing month from the API is a date on the 1st; read it in local time so time zones can't shift the month. */
+const monthOf = (iso: string) => {
+  const date = new Date(iso)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+const dayOf = (iso: string) => iso.slice(0, 10)
+
+// The API has no meter-reading table yet, so a water charge records its readings in its description.
+const meterText = (previous: number, current: number) => `meter ${previous} → ${current}`
+const METER_PATTERN = /meter ([\d.]+) (?:→|->) ([\d.]+)/
+
+type LiveData = { tenancies: Tenancy[]; charges: (Omit<Charge, 'dueDate'> & { dueDate: string | null })[]; payments: Payment[]; readings: MeterReading[] }
+
+/** Loads every tenancy (via each house's history), then each tenancy's charges and payments. */
+async function loadLiveBilling(houses: ApiHouse[]): Promise<LiveData> {
+  const unitByHouse = new Map(houses.map((house) => [house.id, house.unitNumber]))
+  const histories = await Promise.all(houses.map((house) => api.tenanciesForHouse(house.id)))
+  const tenancies: Tenancy[] = histories.flat().map((tenancy) => ({
+    id: tenancy.id,
+    houseId: tenancy.houseId,
+    unitNumber: unitByHouse.get(tenancy.houseId) ?? '—',
+    tenantId: tenancy.tenantId,
+    tenantName: tenancy.tenant?.fullName ?? 'Unknown tenant',
+    tenantPhone: tenancy.tenant?.phone ?? '',
+    monthlyRent: Number(tenancy.monthlyRent),
+    depositRequired: Number(tenancy.depositRequired),
+    startDate: dayOf(tenancy.startDate),
+    endDate: tenancy.actualEndDate ? dayOf(tenancy.actualEndDate) : null,
+    status: tenancy.status === 'VACATED' ? 'VACATED' : 'ACTIVE',
+    openingWaterReading: Number(tenancy.openingWaterReading ?? 0),
+  }))
+
+  const [chargeLists, paymentLists] = await Promise.all([
+    Promise.all(tenancies.map((tenancy) => api.charges(tenancy.id))),
+    Promise.all(tenancies.map((tenancy) => api.payments(tenancy.id))),
+  ])
+
+  const charges = chargeLists.flat().map((charge) => ({
+    id: charge.id,
+    tenancyId: charge.tenancyId,
+    type: (charge.type in chargeTypes ? charge.type : 'OTHER') as ChargeType,
+    period: charge.periodMonth ? monthOf(charge.periodMonth) : null,
+    amount: Number(charge.amount),
+    description: charge.description ?? '',
+    dueDate: charge.dueDate ? dayOf(charge.dueDate) : null,
+    createdAt: dayOf(charge.createdAt),
+    voidedAt: charge.voidedAt ? dayOf(charge.voidedAt) : null,
+  }))
+
+  const payments: Payment[] = paymentLists.flat().map((payment) => ({
+    id: payment.id,
+    tenancyId: payment.tenancyId,
+    amount: Number(payment.amount),
+    paidAt: dayOf(payment.paidAt),
+    method: payment.method,
+    reference: payment.reference ?? '',
+    notes: payment.notes ?? '',
+    allocations: payment.allocations.map((allocation) => ({ chargeId: allocation.chargeId, amount: Number(allocation.amount) })),
+    voidedAt: payment.voidedAt ? dayOf(payment.voidedAt) : null,
+    voidReason: payment.voidReason ?? '',
+  }))
+
+  const readings: MeterReading[] = charges.flatMap((charge) => {
+    const match = charge.type === 'WATER' && !charge.voidedAt && charge.period ? METER_PATTERN.exec(charge.description) : null
+    return match ? [{ id: charge.id, tenancyId: charge.tenancyId, period: charge.period!, previous: Number(match[1]), current: Number(match[2]), recordedAt: charge.createdAt }] : []
+  })
+
+  return { tenancies, charges, payments, readings }
+}
+
+// Garbage fee and rent due day have no API field yet, so they are kept in this browser.
+const SETTINGS_KEY = 'rentwise-billing-settings'
+const DEFAULT_SETTINGS: BillingSettings = { waterRate: 150, garbageFee: 500, rentDueDay: 5 }
+function readLocalSettings(): BillingSettings {
+  try {
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(window.localStorage.getItem(SETTINGS_KEY) ?? '{}') }
+  } catch {
+    return DEFAULT_SETTINGS
+  }
+}
+function writeLocalSettings(settings: BillingSettings) {
+  try { window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)) } catch { /* Storage can be blocked; settings then last for this visit only. */ }
+}
+
 // ─── Hook ────────────────────────────────────────────────────────────────
 
 const BILLING_KEY = 'demo-billing'
+const EMPTY: BillingState = { tenancies: [], charges: [], payments: [], readings: [], settings: DEFAULT_SETTINGS, seq: 0 }
 
-/** Billing data (demo-only until the billing endpoints are wired in). */
+/** Billing from the API when it is reachable, otherwise editable demo data. Both expose the same actions. */
 export function useBilling() {
-  const { data, mutate } = useSWR<BillingState>(BILLING_KEY, null, { fallbackData: seed })
-  const state = data ?? seed
+  const source = useDataSource()
+  const { data: houses } = useSWR('houses', () => api.houses())
+  const { data: properties, mutate: refreshProperties } = useSWR(source === 'api' ? 'properties' : null, api.properties)
+  const live = useSWR(source === 'api' && houses ? ['billing', houses.map((house) => house.id).join(',')] : null, () => loadLiveBilling(houses!))
+  const demo = useSWR<BillingState>(BILLING_KEY, null, { fallbackData: seed })
+  const local = useSWR<BillingSettings>('billing-settings', null, { fallbackData: DEFAULT_SETTINGS })
+
+  useEffect(() => { local.mutate(readLocalSettings(), { revalidate: false }) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const property = properties?.[0]
+  const mode: 'live' | 'demo' | 'error' | 'loading' = source === 'demo' ? 'demo' : live.data ? 'live' : live.error ? 'error' : 'loading'
+
+  const state = useMemo<BillingState>(() => {
+    if (mode === 'demo') return demo.data ?? seed
+    if (mode !== 'live') return EMPTY
+    const settings = { ...(local.data ?? DEFAULT_SETTINGS), waterRate: property ? Number(property.defaultWaterRate) || DEFAULT_SETTINGS.waterRate : (local.data ?? DEFAULT_SETTINGS).waterRate }
+    // Rent the API generates has no due date; it falls due on the landlord's rent day.
+    const charges = live.data!.charges.map((charge) => ({ ...charge, dueDate: charge.dueDate ?? (charge.period ? dueDate(charge.period, settings.rentDueDay) : charge.createdAt) }))
+    return { ...live.data!, charges, settings, seq: 0 }
+  }, [mode, demo.data, live.data, local.data, property])
+
   const ledger = useMemo(() => buildLedger(state), [state])
 
-  const apply = async <T,>(change: (current: BillingState) => { state: BillingState; result: T }) => {
-    const { state: next, result } = change(state)
-    await mutate(next, { revalidate: false })
+  const applyDemo = async <T,>(change: (current: BillingState) => { state: BillingState; result: T }) => {
+    const { state: next, result } = change(demo.data ?? seed)
+    await demo.mutate(next, { revalidate: false })
     return result
   }
+  const requireLive = () => { if (mode !== 'live') throw live.error ?? new Error('Billing is still loading. Try again in a moment.') }
+  const refresh = () => live.mutate()
 
   return {
+    mode,
+    error: live.error as Error | undefined,
     state,
     ledger,
-    recordPayment: (input: PaymentInput) => apply((s) => { const r = recordPayment(s, input); return { state: r.state, result: r.payment } }),
-    voidPayment: (paymentId: string, reason: string) => apply((s) => ({ state: voidPayment(s, paymentId, reason), result: undefined })),
-    generateRent: (period: string) => apply((s) => { const r = generateRent(s, period); return { state: r.state, result: r.created } }),
-    billGarbage: (period: string) => apply((s) => { const r = billGarbage(s, period); return { state: r.state, result: r.created } }),
-    billWater: (period: string, entries: ReadingInput[]) => apply((s) => ({ state: billWater(s, period, entries), result: entries.length })),
-    updateSettings: (settings: BillingSettings) => apply((s) => ({ state: { ...s, settings }, result: undefined })),
-    moveIn: (input: MoveInInput) => apply((s) => ({ state: moveIn(s, input), result: undefined })),
+
+    async recordPayment(input: PaymentInput): Promise<Payment> {
+      if (mode === 'demo') return applyDemo((s) => { const r = recordPayment(s, input); return { state: r.state, result: r.payment } })
+      requireLive()
+      const saved = await api.recordPayment({
+        tenancyId: input.tenancyId,
+        amount: input.amount,
+        paidAt: input.paidAt,
+        method: input.method,
+        reference: input.reference.trim().toUpperCase() || undefined,
+        notes: input.notes.trim() || undefined,
+        allocations: input.allocations,
+        confirmDuplicate: input.confirmDuplicate || undefined,
+      })
+      await refresh()
+      return { id: saved.id, tenancyId: saved.tenancyId, amount: Number(saved.amount), paidAt: dayOf(saved.paidAt), method: saved.method, reference: saved.reference ?? '', notes: saved.notes ?? '', allocations: saved.allocations.map((item) => ({ chargeId: item.chargeId, amount: Number(item.amount) })), voidedAt: null, voidReason: '' }
+    },
+
+    async voidPayment(paymentId: string, reason: string) {
+      if (mode === 'demo') return applyDemo((s) => ({ state: voidPayment(s, paymentId, reason), result: undefined }))
+      requireLive()
+      await api.voidPayment(paymentId, reason)
+      await refresh()
+    },
+
+    async generateRent(period: string): Promise<number> {
+      if (mode === 'demo') return applyDemo((s) => { const r = generateRent(s, period); return { state: r.state, result: r.created } })
+      requireLive()
+      const { generated } = await api.generateRent(`${period}-01`)
+      await refresh()
+      return generated
+    },
+
+    async billGarbage(period: string): Promise<number> {
+      if (mode === 'demo') return applyDemo((s) => { const r = billGarbage(s, period); return { state: r.state, result: r.created } })
+      requireLive()
+      const due = state.tenancies.filter((tenancy) => tenancy.status === 'ACTIVE' && activeIn(tenancy, period) && !ledger.chargeFor(tenancy.id, 'TRASH', period))
+      await Promise.all(due.map((tenancy) => api.createCharge({ tenancyId: tenancy.id, type: 'TRASH', amount: state.settings.garbageFee, periodMonth: `${period}-01`, description: `Garbage collection for ${periodLabel(period)}`, dueDate: dueDate(period, state.settings.rentDueDay) })))
+      await refresh()
+      return due.length
+    },
+
+    async billWater(period: string, entries: ReadingInput[]): Promise<number> {
+      if (mode === 'demo') return applyDemo((s) => ({ state: billWater(s, period, entries), result: entries.length }))
+      requireLive()
+      const bills = entries.flatMap(({ tenancyId, current }) => {
+        const tenancy = state.tenancies.find((item) => item.id === tenancyId)
+        if (!tenancy) return []
+        const previous = ledger.lastReading(tenancy, period)
+        const units = current - previous
+        return units > 0 ? [{ tenancyId, type: 'WATER' as const, amount: units * state.settings.waterRate, periodMonth: `${period}-01`, description: `Water for ${periodLabel(period)} · ${meterText(previous, current)} (${units} units)`, dueDate: dueDate(addMonths(period, 1), 10) }] : []
+      })
+      await Promise.all(bills.map((bill) => api.createCharge(bill)))
+      await refresh()
+      return bills.length
+    },
+
+    async updateSettings(settings: BillingSettings) {
+      writeLocalSettings(settings)
+      await local.mutate(settings, { revalidate: false })
+      if (mode === 'demo') return applyDemo((s) => ({ state: { ...s, settings }, result: undefined }))
+      if (property && Number(property.defaultWaterRate) !== settings.waterRate) {
+        await api.updateProperty(property.id, { defaultWaterRate: settings.waterRate })
+        await refreshProperties()
+      }
+    },
+
+    /** Demo only — on the API, move-in is a tenancy endpoint the Houses page calls; this just reloads billing. */
+    async moveIn(input: MoveInInput) {
+      if (mode === 'demo') return applyDemo((s) => ({ state: moveIn(s, input), result: undefined }))
+      await refresh()
+    },
   }
 }
 

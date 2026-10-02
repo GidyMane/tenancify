@@ -18,6 +18,7 @@ export function AssignTenantDialog({ house, onAssign, onClose }: { house: House;
   const [monthlyRent, setMonthlyRent] = useState(house.defaultMonthlyRent)
   const [depositRequired, setDepositRequired] = useState(house.defaultDepositAmount)
   const [startDate, setStartDate] = useState(today)
+  const [openingWaterReading, setOpeningWaterReading] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -29,7 +30,7 @@ export function AssignTenantDialog({ house, onAssign, onClose }: { house: House;
     setError(null)
     try {
       const tenant: Assignment['tenant'] = kind === 'existing' ? { kind, tenantId } : { kind, fullName, phone }
-      await onAssign({ tenant, monthlyRent, depositRequired, startDate })
+      await onAssign({ tenant, monthlyRent, depositRequired, startDate, openingWaterReading: openingWaterReading === '' ? undefined : Number(openingWaterReading) })
       onClose()
     } catch (err) {
       setError(errorMessage(err))
@@ -89,6 +90,10 @@ export function AssignTenantDialog({ house, onAssign, onClose }: { house: House;
             <input required type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className={inputClass} />
           </Field>
         </div>
+
+        <Field label="Water meter reading at move-in (optional)" hint="The first water bill is worked out from this number.">
+          <input type="number" min="0" value={openingWaterReading} onChange={(event) => setOpeningWaterReading(event.target.value)} className={inputClass} />
+        </Field>
 
         <FormError message={error ?? (tenantsError ? `Couldn't load tenants: ${tenantsError.message}` : null)} />
         <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-5 sm:flex-row sm:justify-end">

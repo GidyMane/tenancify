@@ -3,6 +3,7 @@
 import { useMemo } from 'react'
 import useSWR, { useSWRConfig } from 'swr'
 import { api, type ApiTenant, type TenantInput, type TenantStatus } from '@/lib/api/client'
+import { useDataSource } from '@/lib/data-source'
 import { demoHouses, demoTenants } from '@/lib/demo-data'
 import type { House } from '@/lib/houses'
 
@@ -66,16 +67,20 @@ function toPayload(details: TenantDetails): TenantInput {
 
 const trimmed = (details: TenantDetails) => Object.fromEntries(Object.entries(details).map(([key, value]) => [key, value.trim()])) as TenantDetails
 
-/** Tenants from the API, falling back to editable demo data when the API is unreachable. */
+/** Tenants from the API, or editable demo data when the API is unreachable. */
 export function useTenants() {
   const { mutate } = useSWRConfig()
-  const live = useSWR('tenants', api.tenants)
+  const source = useDataSource()
+  const live = useSWR(source === 'api' ? 'tenants' : null, api.tenants)
   const demo = useSWR<Tenant[]>('demo-tenants', null, { fallbackData: demoTenants })
 
-  const mode: 'live' | 'demo' | 'loading' = live.data ? 'live' : live.error ? 'demo' : 'loading'
-  const tenants = useMemo(() => (live.data ? live.data.map(toTenant) : live.error ? demo.data ?? [] : []), [live.data, live.error, demo.data])
+  // 'error' means the API is up but refused us (usually a missing or expired sign-in token).
+  const mode: 'live' | 'demo' | 'error' | 'loading' = source === 'demo' ? 'demo' : live.data ? 'live' : live.error ? 'error' : 'loading'
+  const tenants = useMemo(() => (mode === 'live' ? live.data!.map(toTenant) : mode === 'demo' ? demo.data ?? [] : []), [mode, live.data, demo.data])
+  const guard = () => { if (mode === 'error' || mode === 'loading') throw live.error ?? new Error('Tenants are still loading.') }
 
   async function createTenant(details: TenantDetails): Promise<Tenant> {
+    guard()
     if (mode === 'live') {
       const created = toTenant(await api.createTenant(toPayload(details)))
       await live.mutate()
@@ -88,6 +93,7 @@ export function useTenants() {
 
   // Houses show their occupant's name and phone, so they are refreshed after a tenant edit.
   async function updateTenant(tenant: Tenant, details: TenantDetails) {
+    guard()
     if (mode === 'live') {
       await api.updateTenant(tenant.id, toPayload(details))
       await Promise.all([live.mutate(), mutate('houses')])
@@ -100,6 +106,7 @@ export function useTenants() {
   }
 
   async function deleteTenant(tenant: Tenant) {
+    guard()
     if (mode === 'live') {
       await api.deleteTenant(tenant.id)
       await live.mutate()

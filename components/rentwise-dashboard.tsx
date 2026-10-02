@@ -14,6 +14,12 @@ import { UtilitiesPage } from '@/components/utilities/utilities-page'
 import { api } from '@/lib/api/client'
 import { useAccounts } from '@/lib/accounts'
 import { useHouses } from '@/lib/houses'
+import { useTenants } from '@/lib/tenants'
+import { isAuthError } from '@/lib/api/client'
+import { AlertTriangle, LogOut } from 'lucide-react'
+import { useKindeBrowserClient } from '@kinde-oss/kinde-auth-nextjs'
+import { LogoutLink } from '@kinde-oss/kinde-auth-nextjs/components'
+import { initials } from '@/lib/format'
 import { today } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -34,8 +40,13 @@ export function RentwiseDashboard() {
   const [greeting, setGreeting] = useState('Hello')
   const { data: properties } = useSWR('properties', api.properties)
   const { houses, mode } = useHouses()
-  const { accounts, ledger } = useAccounts()
+  const { accounts, ledger, mode: billingMode, error: billingError } = useAccounts()
+  const { mode: tenantsMode, error: tenantsError } = useTenants()
+  // The API is reachable but turned us away — almost always a missing or expired sign-in token.
+  const apiProblem = mode === 'live' && (tenantsMode === 'error' || billingMode === 'error') ? (tenantsError ?? billingError) : undefined
   const property = properties?.[0]
+  const { user } = useKindeBrowserClient()
+  const userName = [user?.given_name, user?.family_name].filter(Boolean).join(' ') || user?.email || 'there'
   const owing = accounts.filter((account) => ledger.arrears(account.id, today()).amount > 0).length
 
   // Keep the open page in the URL hash so a refresh or shared link lands on it.
@@ -89,10 +100,10 @@ export function RentwiseDashboard() {
         </nav>
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
           <div className="flex items-center gap-2">
-            <div className={cn('size-2 rounded-full', mode === 'live' ? 'bg-emerald-500' : 'bg-amber-500')} />
-            <p className="text-xs font-medium text-slate-700">{mode === 'live' ? 'Connected to the API' : 'Showing demo data'}</p>
+            <div className={cn('size-2 rounded-full', mode === 'live' && !apiProblem ? 'bg-emerald-500' : 'bg-amber-500')} />
+            <p className="text-xs font-medium text-slate-700">{mode === 'live' ? (apiProblem ? 'API rejected sign-in' : 'Connected to the API') : mode === 'loading' ? 'Connecting…' : 'Showing demo data'}</p>
           </div>
-          <p className="mt-1 text-[11px] text-slate-400">{mode === 'live' ? 'Houses and tenants are live.' : 'Changes last until you refresh.'}</p>
+          <p className="mt-1 text-[11px] text-slate-400">{mode === 'live' ? (apiProblem ? 'Only houses can load.' : 'Changes are saved to the server.') : mode === 'loading' ? 'Checking the API.' : 'API unreachable · changes last until you refresh.'}</p>
         </div>
       </aside>
       {mobileOpen && <button className="fixed inset-0 z-30 bg-slate-950/20 lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation" />}
@@ -102,14 +113,26 @@ export function RentwiseDashboard() {
           <div className="flex items-center gap-3">
             <button className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Open menu"><Menu className="size-5" /></button>
             <div>
-              <p className="text-sm font-medium text-slate-900">{greeting}, Katele</p>
+              <p className="text-sm font-medium text-slate-900">{greeting}, {user?.given_name || userName}</p>
               <p className="hidden text-xs text-slate-400 sm:block">Here&apos;s what&apos;s happening with your property today.</p>
             </div>
           </div>
-          <div className="flex size-8 items-center justify-center rounded-full bg-[#dbeafe] text-xs font-semibold text-blue-700">KO</div>
+          <div className="flex items-center gap-3">
+            <div className="flex size-8 items-center justify-center rounded-full bg-[#dbeafe] text-xs font-semibold text-blue-700" title={user?.email ?? undefined}>{initials(userName)}</div>
+            <LogoutLink className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-900"><LogOut className="size-4" /><span className="hidden sm:inline">Sign out</span></LogoutLink>
+          </div>
         </header>
 
         <div className="mx-auto max-w-[1440px] px-5 py-7 lg:px-8">
+          {apiProblem && (
+            <div role="alert" className="mb-6 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <AlertTriangle className="mt-0.5 size-5 shrink-0 text-amber-600" />
+              <div>
+                <p className="font-semibold">{isAuthError(apiProblem) ? 'You’re signed in, but the API didn’t accept your sign-in' : 'Some data couldn’t be loaded from the API'}</p>
+                <p className="mt-1 text-amber-800">{isAuthError(apiProblem) ? 'Houses still load because they don’t need a sign-in. Check that the API’s KINDE_DOMAIN matches your Kinde domain exactly (https, no trailing slash), then sign out and in again.' : apiProblem.message}</p>
+              </div>
+            </div>
+          )}
           {active === 'dashboard' && <DashboardPage navigate={navigate} />}
           {active === 'houses' && (
             <>

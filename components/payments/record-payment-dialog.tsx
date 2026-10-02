@@ -55,7 +55,7 @@ export function RecordPaymentDialog({ tenancyId: initialTenancyId, onClose }: { 
     setSaving(true)
     setError(null)
     try {
-      setRecorded(await recordPayment({ tenancyId, amount, paidAt, method, reference, notes, allocations: manual ? allocations : undefined }))
+      setRecorded(await recordPayment({ tenancyId, amount, paidAt, method, reference, notes, allocations: manual ? allocations : undefined, confirmDuplicate: Boolean(duplicate && confirmDuplicate) }))
     } catch (err) {
       setError(errorMessage(err))
     } finally {
