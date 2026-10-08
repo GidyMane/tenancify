@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react'
 import useSWR from 'swr'
-import { api, ApiError, type ApiHouse, type HouseStatus } from '@/lib/api/client'
+import { api, type ApiHouse, type HouseStatus } from '@/lib/api/client'
 import { useBilling } from '@/lib/billing'
 import { demoHouses } from '@/lib/demo-data'
 import { emptyTenantDetails, useTenants } from '@/lib/tenants'
@@ -91,11 +91,6 @@ function toPayload(details: HouseDetails, metadata: Record<string, unknown>) {
   }
 }
 
-const notFoundAsNull = (error: unknown) => {
-  if (error instanceof ApiError && error.status === 404) return null
-  throw error
-}
-
 /** Houses from the API, falling back to editable demo data when the API is unreachable. */
 export function useHouses() {
   const live = useSWR('houses', () => api.houses())
@@ -139,8 +134,9 @@ export function useHouses() {
     }
   }
 
-  // Moves out the current occupant (if any), then moves the new tenant in.
+  // Only for a house with no tenant: an occupant leaves through notice → vacate → deposit settlement first.
   async function assignTenant(house: House, assignment: Assignment) {
+    if (house.tenant) throw new Error(`${house.tenant.name} still lives in ${house.unitNumber}. Move them out before assigning someone new.`)
     const { tenant } = assignment
     if (mode === 'live' && tenantsMode !== 'live') throw new Error("Tenants couldn't be loaded from the API, so no one can be assigned right now.")
     const chosen = tenant.kind === 'existing'
@@ -149,14 +145,12 @@ export function useHouses() {
     if (!chosen) throw new Error('Choose a tenant to assign.')
 
     if (mode === 'live') {
-      const current = await api.activeTenancy(house.id).catch(notFoundAsNull)
-      if (current) await api.moveOut(current.id, { actualEndDate: assignment.startDate })
       await api.moveIn({ houseId: house.id, tenantId: chosen.id, monthlyRent: assignment.monthlyRent, depositRequired: assignment.depositRequired, startDate: assignment.startDate, openingWaterReading: assignment.openingWaterReading })
       await live.mutate()
       await billing.moveIn({ houseId: house.id, unitNumber: house.unitNumber, tenantId: chosen.id, tenantName: chosen.fullName, tenantPhone: chosen.phone, monthlyRent: assignment.monthlyRent, depositRequired: assignment.depositRequired, startDate: assignment.startDate })
     } else {
       await updateDemo(house.id, { status: 'OCCUPIED', tenant: { name: chosen.fullName, phone: chosen.phone } })
-      // Mirror the API's move-in: close the old tenancy, open the new one with its deposit charge.
+      // Mirror the API's move-in: open the tenancy with its deposit charge.
       await billing.moveIn({ houseId: house.id, unitNumber: house.unitNumber, tenantId: chosen.id, tenantName: chosen.fullName, tenantPhone: chosen.phone, monthlyRent: assignment.monthlyRent, depositRequired: assignment.depositRequired, startDate: assignment.startDate })
     }
   }

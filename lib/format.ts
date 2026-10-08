@@ -35,7 +35,13 @@ export const formatDate = (isoDate: string) => {
   return new Date(year, month - 1, day).toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-export const daysBetween = (fromIso: string, toIso: string) =>
+export const addDays = (isoDate: string, days: number) => {
+  const [year, month, day] = isoDate.slice(0, 10).split('-').map(Number)
+  const date = new Date(year, month - 1, day + days)
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+export const daysBetween =(fromIso: string, toIso: string) =>
   Math.round((Date.parse(toIso.slice(0, 10)) - Date.parse(fromIso.slice(0, 10))) / 86_400_000)
 
 export const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase()

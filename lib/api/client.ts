@@ -85,6 +85,9 @@ export type ApiTenancy = {
   expectedEndDate?: IsoDate | null
   actualEndDate?: IsoDate | null
   openingWaterReading?: Money | null
+  noticePeriodDays?: number
+  noticeDate?: IsoDate | null
+  moveOutReason?: string | null
   status: 'ACTIVE' | 'NOTICE_GIVEN' | 'VACATED'
   tenant?: ApiTenant
 }
@@ -111,6 +114,56 @@ export type PaymentInput = { tenancyId: string; amount: number; paidAt: string; 
 
 export type ApiBalance = { tenancyId: string; byType: Partial<Record<ApiChargeType, number>>; total: number; isCleared: boolean }
 
+// Moving out: notice (optional) → vacate → deposit settlement.
+export type NoticeInput = { noticeDate: string; expectedEndDate: string; reason?: string }
+/** The API accepts only these three for a house a tenant has just left (and defaults to VACANT). */
+export type HouseStatusAfter = 'VACANT' | 'MAINTENANCE' | 'INACTIVE'
+export type VacateInput = { actualEndDate: string; moveOutReason?: string; houseStatusAfter: HouseStatusAfter; houseStatusReason?: string }
+
+/** A flag, never a price: the API leaves it to the landlord whether short notice costs anything. */
+export type NoticeCompliance = {
+  status: 'PROPER_NOTICE' | 'SHORT_NOTICE' | 'NO_NOTICE'
+  requiredNoticeDays: number
+  noticeDate: IsoDate | null
+  daysGiven: number | null
+  shortfallDays: number
+  endDateUsed: IsoDate
+  /** TODAY or EXPECTED_END means the tenant hasn't left yet, so the figures are provisional. */
+  basis: 'ACTUAL_END' | 'EXPECTED_END' | 'TODAY'
+}
+export type SuggestedDeduction = { chargeId: string; type: ApiChargeType; periodMonth: IsoDate | null; reason: string; amount: number }
+export type SettlementPreview = {
+  tenancyId: string
+  tenancyStatus: ApiTenancy['status']
+  canSettle: boolean
+  alreadySettled: boolean
+  /** `held` is what actually came in, and is the most that can be refunded. */
+  deposit: { agreed: number; charged: number; held: number; neverPaid: number; lines: { chargeId: string; type: ApiChargeType; charged: number; paid: number; outstanding: number }[] }
+  arrears: { total: number; charges: SuggestedDeduction[] }
+  totalOutstandingIncludingDeposit: number
+  unallocatedCredit: number
+  /** Every unpaid non-deposit charge in full, even when that is more than the deposit held. */
+  suggestedDeductions: SuggestedDeduction[]
+  suggestedRefundAmount: number
+  noticeCompliance: NoticeCompliance
+}
+export type VacateResult = { tenancy: ApiTenancy; settlementPreview: SettlementPreview }
+
+/** A line with a chargeId is paid from the deposit (the API books an internal payment against that charge). */
+export type DeductionInput = { reason: string; amount: number; chargeId?: string }
+export type SettlementInput = { refundAmount: number; refundDate?: string; method?: ApiPaymentMethod; notes?: string; deductions?: DeductionInput[] }
+export type ApiSettlement = {
+  id: string
+  tenancyId: string
+  depositHeld: Money
+  refundAmount: Money
+  refundDate: IsoDate | null
+  method: ApiPaymentMethod | null
+  notes: string | null
+  createdAt: IsoDate
+  deductions: { id: string; reason: string; amount: Money }[]
+}
+
 const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body) })
 const id = encodeURIComponent
 
@@ -132,8 +185,14 @@ export const api = {
   activeTenancy: (houseId: string) => apiFetch<ApiTenancy>(`/tenancies/house/${id(houseId)}/active`),
   balance: (tenancyId: string) => apiFetch<ApiBalance>(`/tenancies/tenancy/${id(tenancyId)}/balance`),
   moveIn: (payload: MoveInInput) => apiFetch<ApiTenancy>('/tenancies/move-in', json('POST', payload)),
-  // NOTE: the API has no move-out endpoint yet; this is the route the UI expects once it exists.
-  moveOut: (tenancyId: string, payload: { actualEndDate: string; moveOutReason?: string }) => apiFetch<ApiTenancy>(`/tenancies/tenancy/${id(tenancyId)}/move-out`, json('POST', payload)),
+  // Sending notice again on a NOTICE_GIVEN tenancy edits it. Notice and vacate both set the house's status too.
+  giveNotice: (tenancyId: string, payload: NoticeInput) => apiFetch<ApiTenancy>(`/tenancies/tenancy/${id(tenancyId)}/notice`, json('PATCH', payload)),
+  vacate: (tenancyId: string, payload: VacateInput) => apiFetch<VacateResult>(`/tenancies/tenancy/${id(tenancyId)}/vacate`, json('PATCH', payload)),
+
+  settlementPreview: (tenancyId: string) => apiFetch<SettlementPreview>(`/settlements/tenancy/${id(tenancyId)}/preview`),
+  settlement: (tenancyId: string) => apiFetch<ApiSettlement>(`/settlements/tenancy/${id(tenancyId)}`),
+  // Only once the tenancy is VACATED, and only once per tenancy (409 otherwise).
+  recordSettlement: (tenancyId: string, payload: SettlementInput) => apiFetch<ApiSettlement>(`/settlements/tenancy/${id(tenancyId)}`, json('POST', payload)),
 
   charges: (tenancyId: string) => apiFetch<ApiCharge[]>(`/charges?tenancyId=${id(tenancyId)}`),
   createCharge: (payload: ChargeInput) => apiFetch<ApiCharge>('/charges', json('POST', payload)),

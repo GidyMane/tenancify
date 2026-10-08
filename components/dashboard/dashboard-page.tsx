@@ -11,6 +11,7 @@ import { useAccounts } from '@/lib/accounts'
 import { activeIn, paymentMethods } from '@/lib/billing'
 import { addMonths, currentPeriod, daysBetween, formatDate, formatKsh, initials, percent, periodLabel, periodOf, today } from '@/lib/format'
 import { houseStatuses, useHouses } from '@/lib/houses'
+import { useMoveOuts } from '@/lib/move-out'
 import { cn } from '@/lib/utils'
 
 type Task = { id: string; icon: LucideIcon; tone: string; title: string; detail: string; action: ReactNode }
@@ -18,6 +19,7 @@ type Task = { id: string; icon: LucideIcon; tone: string; title: string; detail:
 export function DashboardPage({ navigate }: { navigate: Navigate }) {
   const { state, ledger, accounts, activeAccounts, accountById, generateRent, billGarbage } = useAccounts()
   const { houses } = useHouses()
+  const { leaving, toSettle } = useMoveOuts()
   const [recording, setRecording] = useState(false)
 
   const period = currentPeriod()
@@ -42,7 +44,6 @@ export function DashboardPage({ navigate }: { navigate: Navigate }) {
   // Houses
   const occupied = houses.filter((house) => house.status === 'OCCUPIED' || house.status === 'NOTICE_GIVEN').length
   const vacant = houses.filter((house) => house.status === 'VACANT')
-  const onNotice = houses.filter((house) => house.status === 'NOTICE_GIVEN')
 
   // Utilities
   const missingRent = activeAccounts.filter((account) => !ledger.chargeFor(account.id, 'RENT', period))
@@ -62,7 +63,8 @@ export function DashboardPage({ navigate }: { navigate: Navigate }) {
     oldArrears.length > 0 && { id: 'old', icon: HandCoins, tone: 'bg-rose-50 text-rose-600', title: `${oldArrears.length} account${oldArrears.length === 1 ? '' : 's'} over 30 days in arrears`, detail: oldArrears.map((row) => `${row.account.tenantName} ${formatKsh(row.amount)}`).join(' · '), action: go('rent', 'Follow up') },
     unreadMeters.length > 0 && { id: 'water', icon: Droplets, tone: 'bg-cyan-50 text-cyan-600', title: `Read water meters for ${periodLabel(lastPeriod)}`, detail: `${unreadMeters.length} house${unreadMeters.length === 1 ? '' : 's'} not read: ${unreadMeters.map((account) => account.unitNumber).join(', ')}`, action: go('utilities', 'Enter readings') },
     garbageUnbilled.length > 0 && { id: 'garbage', icon: Trash2, tone: 'bg-orange-50 text-orange-600', title: `Bill garbage for ${periodLabel(period)}`, detail: `${garbageUnbilled.length} house${garbageUnbilled.length === 1 ? '' : 's'} at ${formatKsh(state.settings.garbageFee)} each.`, action: <Button onClick={() => billGarbage(period)} className="h-8 bg-slate-950 px-3 text-xs text-white hover:bg-slate-800">Bill now</Button> },
-    onNotice.length > 0 && { id: 'notice', icon: Home, tone: 'bg-amber-50 text-amber-600', title: `${onNotice.length} tenant${onNotice.length === 1 ? ' is' : 's are'} on notice`, detail: `${onNotice.map((house) => `${house.unitNumber}${house.tenant ? ` (${house.tenant.name})` : ''}`).join(', ')} — line up the next tenant.`, action: go('houses', 'View houses') },
+    leaving.length > 0 && { id: 'notice', icon: Home, tone: 'bg-amber-50 text-amber-600', title: `${leaving.length} tenant${leaving.length === 1 ? ' is' : 's are'} on notice`, detail: `${leaving.map((account) => `${account.unitNumber} (${account.tenantName}${account.expectedEndDate ? `, leaves ${formatDate(account.expectedEndDate)}` : ''})`).join(', ')} — line up the next tenant.`, action: go('houses', 'View houses') },
+    toSettle.length > 0 && { id: 'deposits', icon: HandCoins, tone: 'bg-violet-50 text-violet-600', title: `${toSettle.length} deposit${toSettle.length === 1 ? '' : 's'} to settle`, detail: `${toSettle.map(({ account, preview }) => `${account.tenantName} (${formatKsh(preview.deposit.held)} held)`).join(' · ')} — they've moved out; refund or deduct.`, action: go('houses', 'Settle') },
     vacant.length > 0 && { id: 'vacant', icon: Building2, tone: 'bg-sky-50 text-sky-600', title: `${vacant.length} vacant house${vacant.length === 1 ? '' : 's'} ready to let`, detail: vacant.map((house) => `${house.unitNumber} · ${formatKsh(house.defaultMonthlyRent)}`).join(', '), action: go('houses', 'Assign tenant') },
   ].filter(Boolean) as Task[]
 

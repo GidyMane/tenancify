@@ -1,10 +1,13 @@
 'use client'
 
 import { useEffect, useMemo } from 'react'
-import useSWR from 'swr'
-import { api, type ApiHouse } from '@/lib/api/client'
+import useSWR, { useSWRConfig } from 'swr'
+import { api, type ApiHouse, type NoticeCompliance, type NoticeInput, type SettlementInput, type SettlementPreview, type VacateInput } from '@/lib/api/client'
 import { useDataSource } from '@/lib/data-source'
-import { addMonths, currentPeriod, periodLabel, today } from '@/lib/format'
+import { demoHouses, demoTenants } from '@/lib/demo-data'
+import { addMonths, currentPeriod, daysBetween, periodLabel, today } from '@/lib/format'
+import type { House } from '@/lib/houses'
+import type { Tenant } from '@/lib/tenants'
 
 // ─── Model ──────────────────────────────────────────────────────────────
 // Mirrors the API: a Tenancy freezes rent and deposit at move-in, Charges are
@@ -24,9 +27,16 @@ export type Tenancy = {
   depositRequired: number
   startDate: string
   endDate: string | null
+  /** A tenant on notice stays ACTIVE here: they still live in the house and still owe rent. */
   status: 'ACTIVE' | 'VACATED'
   openingWaterReading: number
+  noticePeriodDays: number
+  noticeDate: string | null
+  expectedEndDate: string | null
+  moveOutReason: string
 }
+
+export const onNotice = (tenancy: Tenancy) => tenancy.status === 'ACTIVE' && !!tenancy.noticeDate
 
 export type Charge = {
   id: string
@@ -59,7 +69,10 @@ export type MeterReading = { id: string; tenancyId: string; period: string; prev
 
 export type BillingSettings = { waterRate: number; garbageFee: number; rentDueDay: number }
 
-export type BillingState = { tenancies: Tenancy[]; charges: Charge[]; payments: Payment[]; readings: MeterReading[]; settings: BillingSettings; seq: number }
+/** The deposit decision recorded once a tenant has left. */
+export type Settlement = { id: string; tenancyId: string; depositHeld: number; refundAmount: number; refundDate: string | null; method: PaymentMethod | null; notes: string; deductions: { reason: string; amount: number }[]; createdAt: string }
+
+export type BillingState = { tenancies: Tenancy[]; charges: Charge[]; payments: Payment[]; readings: MeterReading[]; settlements: Settlement[]; settings: BillingSettings; seq: number }
 
 export const chargeTypes: Record<ChargeType, { label: string; tone: string; bar: string }> = {
   RENTDEPOSIT: { label: 'Deposit', tone: 'bg-violet-50 text-violet-700', bar: 'bg-violet-500' },
@@ -76,7 +89,9 @@ export const chargeTypes: Record<ChargeType, { label: string; tone: string; bar:
 
 export const paymentMethods: Record<PaymentMethod, string> = { MPESA: 'M-Pesa', BANK: 'Bank', CASH: 'Cash', OTHER: 'Other' }
 
-export const chargeLabel = (charge: Charge) => `${chargeTypes[charge.type].label}${charge.period ? ` · ${periodLabel(charge.period, 'short')}` : ''}`
+export const isDeposit = (type: ChargeType) => type.endsWith('DEPOSIT')
+
+export const chargeLabel =(charge: Charge) => `${chargeTypes[charge.type].label}${charge.period ? ` · ${periodLabel(charge.period, 'short')}` : ''}`
 
 // Deposits first, then rent, then water, then everything else; oldest first within a tier.
 const PRIORITY: Record<ChargeType, number> = { RENTDEPOSIT: 0, WATERDEPOSIT: 0, TRASHDEPOSIT: 0, SECURITYDEPOSIT: 0, RENT: 1, WATER: 2, TRASH: 3, SECURITY: 3, SERVICEFEE: 3, OTHER: 3 }
@@ -160,7 +175,7 @@ export function buildLedger(state: BillingState) {
     return code ? livePayments.find((payment) => payment.reference.toUpperCase() === code) ?? null : null
   }
 
-  return { livePayments, liveCharges, paidOn, outstandingOn, outstandingCharges, account, arrears, rentStatus, chargeFor, periodTotals, readingFor, lastReading, findByReference, unallocated }
+  return { livePayments, liveCharges, paidOn, outstandingOn, outstandingCharges, paymentsFor, account, arrears, rentStatus, chargeFor, periodTotals, readingFor, lastReading, findByReference, unallocated }
 }
 
 export function autoAllocate(outstanding: Charge[], ledger: Ledger, amount: number): Allocation[] {
@@ -193,12 +208,110 @@ export function moveIn(state: BillingState, input: MoveInInput): BillingState {
   const ledger = buildLedger(next)
   const openingWaterReading = current ? ledger.lastReading(current, '9999-12') : next.tenancies.filter((t) => t.houseId === input.houseId).reduce((value, t) => Math.max(value, ledger.lastReading(t, '9999-12')), 0)
   const [id, withId] = nextId(next, 'tenancy')
-  next = { ...withId, tenancies: [...withId.tenancies, { ...input, id, endDate: null, status: 'ACTIVE', openingWaterReading }] }
+  next = { ...withId, tenancies: [...withId.tenancies, { ...input, id, endDate: null, status: 'ACTIVE', openingWaterReading, noticePeriodDays: DEFAULT_NOTICE_DAYS, noticeDate: null, expectedEndDate: null, moveOutReason: '' }] }
   return addCharge(next, { tenancyId: id, type: 'RENTDEPOSIT', period: null, amount: input.depositRequired, description: 'Security deposit', dueDate: input.startDate, createdAt: input.startDate })
 }
 
 export function moveOut(state: BillingState, tenancyId: string, endDate: string): BillingState {
   return { ...state, tenancies: state.tenancies.map((tenancy) => (tenancy.id === tenancyId ? { ...tenancy, status: 'VACATED', endDate } : tenancy)) }
+}
+
+// ─── Moving out: the API's notice → vacate → settlement rules, for demo data ──
+
+const DEFAULT_NOTICE_DAYS = 30
+
+const findTenancy = (state: BillingState, tenancyId: string) => {
+  const tenancy = state.tenancies.find((item) => item.id === tenancyId)
+  if (!tenancy) throw new Error('That tenancy no longer exists.')
+  return tenancy
+}
+const updateTenancy = (state: BillingState, tenancyId: string, change: Partial<Tenancy>): BillingState =>
+  ({ ...state, tenancies: state.tenancies.map((tenancy) => (tenancy.id === tenancyId ? { ...tenancy, ...change } : tenancy)) })
+
+/** Records (or corrects) a notice. The tenancy stays active until vacate. */
+export function giveNotice(state: BillingState, tenancyId: string, input: NoticeInput): BillingState {
+  if (findTenancy(state, tenancyId).status === 'VACATED') throw new Error('This tenancy has already ended')
+  return updateTenancy(state, tenancyId, { noticeDate: input.noticeDate, expectedEndDate: input.expectedEndDate, ...(input.reason !== undefined ? { moveOutReason: input.reason } : {}) })
+}
+
+/** Ends the tenancy, then spends any leftover credit on what is still owed, since no new charge will ever absorb it. */
+export function vacate(state: BillingState, tenancyId: string, input: VacateInput): BillingState {
+  if (findTenancy(state, tenancyId).status === 'VACATED') throw new Error('This tenancy has already ended')
+  let next = updateTenancy(moveOut(state, tenancyId, input.actualEndDate), tenancyId, input.moveOutReason !== undefined ? { moveOutReason: input.moveOutReason } : {})
+  const payments = next.payments.filter((payment) => payment.tenancyId === tenancyId && !payment.voidedAt).sort((a, b) => a.paidAt.localeCompare(b.paidAt))
+  for (const { id } of payments) {
+    const ledger = buildLedger(next)
+    const payment = next.payments.find((item) => item.id === id)!
+    const extra = autoAllocate(ledger.outstandingCharges(tenancyId), ledger, ledger.unallocated(payment))
+    if (extra.length) next = { ...next, payments: next.payments.map((item) => (item.id === id ? { ...item, allocations: [...item.allocations, ...extra] } : item)) }
+  }
+  return next
+}
+
+function noticeCompliance(tenancy: Tenancy, now: string): NoticeCompliance {
+  const [endDateUsed, basis]: [string, NoticeCompliance['basis']] = tenancy.endDate ? [tenancy.endDate, 'ACTUAL_END'] : tenancy.expectedEndDate ? [tenancy.expectedEndDate, 'EXPECTED_END'] : [now, 'TODAY']
+  const requiredNoticeDays = tenancy.noticePeriodDays
+  if (!tenancy.noticeDate) return { status: 'NO_NOTICE', requiredNoticeDays, noticeDate: null, daysGiven: null, shortfallDays: requiredNoticeDays, endDateUsed, basis }
+  const daysGiven = daysBetween(tenancy.noticeDate, endDateUsed)
+  return { status: daysGiven >= requiredNoticeDays ? 'PROPER_NOTICE' : 'SHORT_NOTICE', requiredNoticeDays, noticeDate: tenancy.noticeDate, daysGiven, shortfallDays: Math.max(0, requiredNoticeDays - daysGiven), endDateUsed, basis }
+}
+
+/** Same shape and arithmetic as GET settlements/tenancy/:id/preview. */
+export function buildSettlementPreview(state: BillingState, tenancyId: string, now = today()): SettlementPreview {
+  const tenancy = findTenancy(state, tenancyId)
+  const ledger = buildLedger(state)
+  const lines = ledger.liveCharges.filter((charge) => charge.tenancyId === tenancyId && isDeposit(charge.type))
+    .map((charge) => ({ chargeId: charge.id, type: charge.type, charged: charge.amount, paid: ledger.paidOn(charge), outstanding: ledger.outstandingOn(charge) }))
+  const held = lines.reduce((sum, line) => sum + line.paid, 0)
+  const charged = lines.reduce((sum, line) => sum + line.charged, 0)
+  const outstanding = ledger.outstandingCharges(tenancyId)
+  const suggestedDeductions = outstanding.filter((charge) => !isDeposit(charge.type)).map((charge) => ({
+    chargeId: charge.id,
+    type: charge.type,
+    periodMonth: charge.period ? `${charge.period}-01` : null,
+    reason: `${chargeTypes[charge.type].label} arrears${charge.period ? ` for ${charge.period}` : ''}`,
+    amount: ledger.outstandingOn(charge),
+  }))
+  const arrearsTotal = suggestedDeductions.reduce((sum, line) => sum + line.amount, 0)
+  const settled = state.settlements.some((item) => item.tenancyId === tenancyId)
+  return {
+    tenancyId,
+    tenancyStatus: tenancy.status === 'VACATED' ? 'VACATED' : tenancy.noticeDate ? 'NOTICE_GIVEN' : 'ACTIVE',
+    canSettle: tenancy.status === 'VACATED' && !settled,
+    alreadySettled: settled,
+    deposit: { agreed: tenancy.depositRequired, charged, held, neverPaid: charged - held, lines },
+    arrears: { total: arrearsTotal, charges: suggestedDeductions },
+    totalOutstandingIncludingDeposit: outstanding.reduce((sum, charge) => sum + ledger.outstandingOn(charge), 0),
+    unallocatedCredit: ledger.paymentsFor(tenancyId).reduce((sum, payment) => sum + ledger.unallocated(payment), 0),
+    suggestedDeductions,
+    suggestedRefundAmount: Math.max(0, held - arrearsTotal),
+    noticeCompliance: noticeCompliance(tenancy, now),
+  }
+}
+
+/** Saves the landlord's deposit decision. Lines naming a charge are paid from the deposit with an internal payment. */
+export function recordSettlement(state: BillingState, tenancyId: string, input: SettlementInput): BillingState {
+  if (findTenancy(state, tenancyId).status !== 'VACATED') throw new Error('A deposit can only be settled once the tenant has actually vacated')
+  if (state.settlements.some((item) => item.tenancyId === tenancyId)) throw new Error('A deposit settlement has already been recorded for this tenancy')
+  const preview = buildSettlementPreview(state, tenancyId)
+  if (input.refundAmount > preview.deposit.held) throw new Error(`Refund of ${input.refundAmount} exceeds the ${preview.deposit.held} actually received as deposit for this tenancy`)
+  const deductions = input.deductions ?? []
+  const paidFromDeposit = new Map<string, number>()
+  deductions.forEach(({ chargeId, amount }) => {
+    if (!chargeId) return
+    const owed = preview.suggestedDeductions.find((line) => line.chargeId === chargeId)?.amount
+    if (owed === undefined) throw new Error(`Charge ${chargeId} is not an outstanding charge on this tenancy`)
+    const total = (paidFromDeposit.get(chargeId) ?? 0) + amount
+    if (total > owed) throw new Error(`Deductions against charge ${chargeId} total more than its outstanding balance of ${owed}`)
+    paidFromDeposit.set(chargeId, total)
+  })
+
+  const [id, withId] = nextId(state, 'settlement')
+  const settlement: Settlement = { id, tenancyId, depositHeld: preview.deposit.held, refundAmount: input.refundAmount, refundDate: input.refundDate ?? null, method: input.method ?? null, notes: input.notes ?? '', deductions: deductions.map(({ reason, amount }) => ({ reason, amount })), createdAt: today() }
+  const next: BillingState = { ...withId, settlements: [...withId.settlements, settlement] }
+  if (!paidFromDeposit.size) return next
+  const allocations = [...paidFromDeposit.entries()].map(([chargeId, amount]) => ({ chargeId, amount }))
+  return recordPayment(next, { tenancyId, amount: allocations.reduce((sum, item) => sum + item.amount, 0), paidAt: input.refundDate ?? today(), method: 'OTHER', reference: '', notes: `Settled from deposit — refund ${id}`, allocations }).state
 }
 
 /** Whether a tenancy was running at any point in the month. */
@@ -257,7 +370,7 @@ export function seedBilling(): BillingState {
   const p0 = currentPeriod()
   const [p2, p1] = [addMonths(p0, -2), addMonths(p0, -1)]
   const day = (period: string, d: number) => dueDate(period, d)
-  let state: BillingState = { tenancies: [], charges: [], payments: [], readings: [], settings: { waterRate: 150, garbageFee: 500, rentDueDay: 5 }, seq: 0 }
+  let state: BillingState = { tenancies: [], charges: [], payments: [], readings: [], settlements: [], settings: { waterRate: 150, garbageFee: 500, rentDueDay: 5 }, seq: 0 }
 
   const people = [
     { houseId: 'demo-H01', unitNumber: 'H01', tenantId: 'demo-tenant-1', tenantName: 'John Kamau', tenantPhone: '0712 445 890', rent: 15000, start: addMonths(p0, -14), meter: 100 },
@@ -297,9 +410,10 @@ export function seedBilling(): BillingState {
   state = pay(state, lucy, 'clear', day(p2, 6))
   state = pay(state, david, 14000, day(p2, 8))
   state = billWater(state, p2, readings(p2, [john, mary, peter, jane, lucy, david]), day(p1, 1))
-  state = moveOut(state, david, day(p2, 28))
+  state = vacate(state, david, { actualEndDate: day(p2, 28), moveOutReason: 'Moved to his own house', houseStatusAfter: 'VACANT' })
 
-  // Last month: Mary and Lucy pay part, Peter (now on notice) pays nothing.
+  // Last month: Mary and Lucy pay part, Peter gives notice and pays nothing.
+  state = giveNotice(state, peter, { noticeDate: day(p1, 20), expectedEndDate: day(p0, 10), reason: 'Relocating for work' })
   state = generateRent(state, p1, day(p1, 1)).state
   state = billGarbage(state, p1, day(p1, 1)).state
   state = pay(state, jane, 'clear', day(p1, 2), 'BANK')
@@ -347,6 +461,10 @@ async function loadLiveBilling(houses: ApiHouse[]): Promise<LiveData> {
     endDate: tenancy.actualEndDate ? dayOf(tenancy.actualEndDate) : null,
     status: tenancy.status === 'VACATED' ? 'VACATED' : 'ACTIVE',
     openingWaterReading: Number(tenancy.openingWaterReading ?? 0),
+    noticePeriodDays: tenancy.noticePeriodDays ?? DEFAULT_NOTICE_DAYS,
+    noticeDate: tenancy.noticeDate ? dayOf(tenancy.noticeDate) : null,
+    expectedEndDate: tenancy.expectedEndDate ? dayOf(tenancy.expectedEndDate) : null,
+    moveOutReason: tenancy.moveOutReason ?? '',
   }))
 
   const [chargeLists, paymentLists] = await Promise.all([
@@ -404,10 +522,11 @@ function writeLocalSettings(settings: BillingSettings) {
 // ─── Hook ────────────────────────────────────────────────────────────────
 
 const BILLING_KEY = 'demo-billing'
-const EMPTY: BillingState = { tenancies: [], charges: [], payments: [], readings: [], settings: DEFAULT_SETTINGS, seq: 0 }
+const EMPTY: BillingState = { tenancies: [], charges: [], payments: [], readings: [], settlements: [], settings: DEFAULT_SETTINGS, seq: 0 }
 
 /** Billing from the API when it is reachable, otherwise editable demo data. Both expose the same actions. */
 export function useBilling() {
+  const { mutate } = useSWRConfig()
   const source = useDataSource()
   const { data: houses } = useSWR('houses', () => api.houses())
   const { data: properties, mutate: refreshProperties } = useSWR(source === 'api' ? 'properties' : null, api.properties)
@@ -426,7 +545,8 @@ export function useBilling() {
     const settings = { ...(local.data ?? DEFAULT_SETTINGS), waterRate: property ? Number(property.defaultWaterRate) || DEFAULT_SETTINGS.waterRate : (local.data ?? DEFAULT_SETTINGS).waterRate }
     // Rent the API generates has no due date; it falls due on the landlord's rent day.
     const charges = live.data!.charges.map((charge) => ({ ...charge, dueDate: charge.dueDate ?? (charge.period ? dueDate(charge.period, settings.rentDueDay) : charge.createdAt) }))
-    return { ...live.data!, charges, settings, seq: 0 }
+    // Live settlements are read per tenancy from the preview endpoint (lib/move-out.ts), so none are kept here.
+    return { ...live.data!, charges, settlements: [], settings, seq: 0 }
   }, [mode, demo.data, live.data, local.data, property])
 
   const ledger = useMemo(() => buildLedger(state), [state])
@@ -438,6 +558,10 @@ export function useBilling() {
   }
   const requireLive = () => { if (mode !== 'live') throw live.error ?? new Error('Billing is still loading. Try again in a moment.') }
   const refresh = () => live.mutate()
+  // Notice and vacate also change the house (and vacate makes the tenant a former tenant), so those lists follow.
+  const refreshHousesAndTenants = () => Promise.all([mutate('houses'), mutate('tenants'), refresh()])
+  const updateDemoHouse = (houseId: string, change: Partial<House>) =>
+    mutate<House[]>('demo-houses', (current = demoHouses) => current.map((house) => (house.id === houseId ? { ...house, ...change } : house)), { revalidate: false })
 
   return {
     mode,
@@ -509,6 +633,39 @@ export function useBilling() {
         await api.updateProperty(property.id, { defaultWaterRate: settings.waterRate })
         await refreshProperties()
       }
+    },
+
+    async giveNotice(tenancyId: string, input: NoticeInput) {
+      if (mode === 'demo') {
+        await applyDemo((s) => ({ state: giveNotice(s, tenancyId, input), result: undefined }))
+        await updateDemoHouse(findTenancy(state, tenancyId).houseId, { status: 'NOTICE_GIVEN' })
+        return
+      }
+      requireLive()
+      await api.giveNotice(tenancyId, input)
+      await refreshHousesAndTenants()
+    },
+
+    /** Ends the tenancy and returns the settlement preview the API works out in the same step. */
+    async vacate(tenancyId: string, input: VacateInput): Promise<SettlementPreview> {
+      if (mode === 'demo') {
+        const tenancy = findTenancy(state, tenancyId)
+        const preview = await applyDemo((s) => { const next = vacate(s, tenancyId, input); return { state: next, result: buildSettlementPreview(next, tenancyId) } })
+        await updateDemoHouse(tenancy.houseId, { status: input.houseStatusAfter, tenant: null })
+        await mutate<Tenant[]>('demo-tenants', (current = demoTenants) => current.map((tenant) => (tenant.id === tenancy.tenantId ? { ...tenant, status: 'FORMER' } : tenant)), { revalidate: false })
+        return preview
+      }
+      requireLive()
+      const { settlementPreview } = await api.vacate(tenancyId, input)
+      await Promise.all([refreshHousesAndTenants(), mutate(['settlement-preview', tenancyId], settlementPreview, { revalidate: false })])
+      return settlementPreview
+    },
+
+    async recordSettlement(tenancyId: string, input: SettlementInput) {
+      if (mode === 'demo') return applyDemo((s) => ({ state: recordSettlement(s, tenancyId, input), result: undefined }))
+      requireLive()
+      await api.recordSettlement(tenancyId, input)
+      await Promise.all([refresh(), mutate((key) => Array.isArray(key) && (String(key[0]).startsWith('settlement-preview') || key[0] === 'balance'))])
     },
 
     /** Demo only — on the API, move-in is a tenancy endpoint the Houses page calls; this just reloads billing. */

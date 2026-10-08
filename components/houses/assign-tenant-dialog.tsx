@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, type FormEvent } from 'react'
-import { ArrowRight, UserRound } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAvailableTenants, type Assignment, type House } from '@/lib/houses'
 import { cn } from '@/lib/utils'
@@ -22,7 +21,6 @@ export function AssignTenantDialog({ house, onAssign, onClose }: { house: House;
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const current = house.tenant
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -41,18 +39,11 @@ export function AssignTenantDialog({ house, onAssign, onClose }: { house: House;
   return (
     <Dialog
       eyebrow={`House ${house.unitNumber}`}
-      title={current ? 'Change tenant' : 'Assign a tenant'}
-      description={current ? 'Move the current tenant out and hand the house to someone new in one step.' : 'Move a tenant into this house. It will be marked as occupied.'}
+      title="Assign a tenant"
+      description="Move a tenant into this house. It will be marked as occupied."
       onClose={onClose}
     >
       <form className="mt-6 flex flex-col gap-5" onSubmit={submit}>
-        {current && (
-          <div className="flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
-            <UserRound className="size-5 shrink-0 text-amber-600" />
-            <p className="text-amber-800"><span className="font-semibold">{current.name}</span> will be moved out on the start date below.</p>
-          </div>
-        )}
-
         <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1" role="tablist" aria-label="Tenant source">
           {(['existing', 'new'] as const).map((value) => (
             <button key={value} type="button" role="tab" aria-selected={kind === value} onClick={() => setKind(value)} className={cn('rounded-lg py-2 text-sm font-medium', kind === value ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800')}>
@@ -99,7 +90,7 @@ export function AssignTenantDialog({ house, onAssign, onClose }: { house: House;
         <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-5 sm:flex-row sm:justify-end">
           <Button type="button" variant="outline" onClick={onClose} className="h-10 border-slate-300 bg-white px-4 text-slate-700 hover:bg-slate-100">Cancel</Button>
           <Button type="submit" disabled={saving} className="h-10 bg-slate-950 px-4 text-white hover:bg-slate-800">
-            {saving ? 'Saving…' : current ? <>Replace tenant<ArrowRight data-icon="inline-end" /></> : 'Assign tenant'}
+            {saving ? 'Saving…' : 'Assign tenant'}
           </Button>
         </div>
       </form>
