@@ -98,12 +98,15 @@ export function RentwiseDashboard() {
             </div>
           ))}
         </nav>
-        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-          <div className="flex items-center gap-2">
-            <div className={cn('size-2 rounded-full', mode === 'live' && !apiProblem ? 'bg-emerald-500' : 'bg-amber-500')} />
-            <p className="text-xs font-medium text-slate-700">{mode === 'live' ? (apiProblem ? 'API rejected sign-in' : 'Connected to the API') : mode === 'loading' ? 'Connecting…' : 'Showing demo data'}</p>
+        <div className="border-t border-slate-100 px-1 pt-3">
+          <p className="text-[11px] leading-relaxed text-slate-400">
+            Powered by <span className="font-medium text-slate-600">ManeSoftware</span>
+            <br />in partnership with <span className="font-medium text-slate-600">KiboTech</span>
+          </p>
+          <div className="mt-2 flex items-center gap-1.5" title={mode === 'live' ? (apiProblem ? 'API rejected sign-in · only houses can load.' : 'Connected · changes are saved to the server.') : mode === 'loading' ? 'Connecting…' : 'Demo data · changes last until you refresh.'}>
+            <div className={cn('size-1.5 rounded-full', mode === 'live' && !apiProblem ? 'bg-emerald-400/70' : 'bg-amber-400/70')} />
+            <p className="text-[10px] text-slate-300">{mode === 'live' ? (apiProblem ? 'Limited' : 'Online') : mode === 'loading' ? 'Connecting…' : 'Demo mode'}</p>
           </div>
-          <p className="mt-1 text-[11px] text-slate-400">{mode === 'live' ? (apiProblem ? 'Only houses can load.' : 'Changes are saved to the server.') : mode === 'loading' ? 'Checking the API.' : 'API unreachable · changes last until you refresh.'}</p>
         </div>
       </aside>
       {mobileOpen && <button className="fixed inset-0 z-30 bg-slate-950/20 lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation" />}
