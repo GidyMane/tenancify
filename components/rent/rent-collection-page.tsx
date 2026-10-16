@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { useAccounts, type Account } from '@/lib/accounts'
 import { chargeTypes, type ChargeType, type RentStatus } from '@/lib/billing'
 import { currentPeriod, daysBetween, formatDate, formatKsh, percent, periodLabel, today } from '@/lib/format'
+import { usePropertyScope } from '@/lib/property-scope'
 import { cn } from '@/lib/utils'
 
 export const rentStatusMeta: Record<RentStatus, { label: string; tone: string }> = {
@@ -50,6 +51,7 @@ export function RentCollectionPage() {
 
 function MonthlyRent({ period, onCollect }: { period: string; onCollect: (tenancyId: string) => void }) {
   const { accounts, ledger, generateRent } = useAccounts()
+  const { current: currentProperty } = usePropertyScope()
   const [statusFilter, setStatusFilter] = useState<RentStatus | 'ALL'>('ALL')
   const [query, setQuery] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
@@ -71,7 +73,8 @@ function MonthlyRent({ period, onCollect }: { period: string; onCollect: (tenanc
 
   async function generate() {
     const created = await generateRent(period)
-    setNotice(`Rent generated for ${created} tenant${created === 1 ? '' : 's'} for ${periodLabel(period)}.`)
+    // The API generates rent for every property at once, so the count isn't limited to the one switched to.
+    setNotice(`Rent generated for ${created} tenant${created === 1 ? '' : 's'} for ${periodLabel(period)}${currentProperty ? ' across all your properties' : ''}.`)
   }
 
   if (!rows.length) {

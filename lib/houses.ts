@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 import useSWR from 'swr'
 import { api, type ApiHouse, type HouseStatus } from '@/lib/api/client'
 import { useBilling } from '@/lib/billing'
+import { ALL_PROPERTIES, usePropertyScope } from '@/lib/property-scope'
 import { demoHouses } from '@/lib/demo-data'
 import { emptyTenantDetails, useTenants } from '@/lib/tenants'
 
@@ -91,7 +92,7 @@ function toPayload(details: HouseDetails, metadata: Record<string, unknown>) {
   }
 }
 
-/** Houses from the API, falling back to editable demo data when the API is unreachable. */
+/** Houses from the API (or editable demo data when it is unreachable). `houses` follows the sidebar's property switcher; `allHouses` doesn't. */
 export function useHouses() {
   const live = useSWR('houses', () => api.houses())
   const demo = useSWR<House[]>('demo-houses', null, { fallbackData: demoHouses })
@@ -99,7 +100,9 @@ export function useHouses() {
   const billing = useBilling()
 
   const mode: 'live' | 'demo' | 'loading' = live.data ? 'live' : live.error ? 'demo' : 'loading'
-  const houses = useMemo(() => (live.data ? live.data.map(toHouse) : live.error ? demo.data ?? [] : []), [live.data, live.error, demo.data])
+  const allHouses = useMemo(() => (live.data ? live.data.map(toHouse) : live.error ? demo.data ?? [] : []), [live.data, live.error, demo.data])
+  const { scopeId } = usePropertyScope()
+  const houses = useMemo(() => (scopeId === ALL_PROPERTIES ? allHouses : allHouses.filter((house) => house.propertyId === scopeId)), [allHouses, scopeId])
 
   const updateDemo = (houseId: string, change: Partial<House>) =>
     demo.mutate((current = demoHouses) => current.map((house) => (house.id === houseId ? { ...house, ...change } : house)), { revalidate: false })
@@ -153,12 +156,12 @@ export function useHouses() {
     }
   }
 
-  return { houses, mode, saveHouse, changeStatus, assignTenant }
+  return { houses, allHouses, mode, saveHouse, changeStatus, assignTenant }
 }
 
 /** Active tenants who are not currently housed, for the assignment picker. */
 export function useAvailableTenants() {
-  const { houses } = useHouses()
+  const { allHouses: houses } = useHouses()
   const { tenants, error } = useTenants()
   const housed = new Set(houses.flatMap((house) => (house.tenant ? [house.tenant.name] : [])))
   const options = tenants.filter((tenant) => tenant.status === 'ACTIVE' && !housed.has(tenant.fullName))

@@ -6,6 +6,7 @@ import { api, type ApiHouse, type NoticeCompliance, type NoticeInput, type Settl
 import { useDataSource } from '@/lib/data-source'
 import { demoHouses, demoTenants } from '@/lib/demo-data'
 import { addMonths, currentPeriod, daysBetween, periodLabel, today } from '@/lib/format'
+import { ALL_PROPERTIES, usePropertyScope } from '@/lib/property-scope'
 import type { House } from '@/lib/houses'
 import type { Tenant } from '@/lib/tenants'
 
@@ -519,6 +520,14 @@ function writeLocalSettings(settings: BillingSettings) {
   try { window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)) } catch { /* Storage can be blocked; settings then last for this visit only. */ }
 }
 
+/** Only the tenancies of these houses, and the charges, payments, readings and settlements that hang off them. */
+function scopeToHouses(state: BillingState, houseIds: Set<string>): BillingState {
+  const tenancies = state.tenancies.filter((tenancy) => houseIds.has(tenancy.houseId))
+  const ids = new Set(tenancies.map((tenancy) => tenancy.id))
+  const own = <T extends { tenancyId: string }>(items: T[]) => items.filter((item) => ids.has(item.tenancyId))
+  return { ...state, tenancies, charges: own(state.charges), payments: own(state.payments), readings: own(state.readings), settlements: own(state.settlements) }
+}
+
 // ─── Hook ────────────────────────────────────────────────────────────────
 
 const BILLING_KEY = 'demo-billing'
@@ -533,13 +542,16 @@ export function useBilling() {
   const live = useSWR(source === 'api' && houses ? ['billing', houses.map((house) => house.id).join(',')] : null, () => loadLiveBilling(houses!))
   const demo = useSWR<BillingState>(BILLING_KEY, null, { fallbackData: seed })
   const local = useSWR<BillingSettings>('billing-settings', null, { fallbackData: DEFAULT_SETTINGS })
+  const { data: demoHouseList } = useSWR<House[]>('demo-houses', null, { fallbackData: demoHouses })
+  const { scopeId, current: currentProperty } = usePropertyScope()
 
   useEffect(() => { local.mutate(readLocalSettings(), { revalidate: false }) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const property = properties?.[0]
+  // The water rate is the switched-to property's; with "All properties" it is the first one's.
+  const property = (currentProperty && properties?.find((item) => item.id === currentProperty.id)) ?? properties?.[0]
   const mode: 'live' | 'demo' | 'error' | 'loading' = source === 'demo' ? 'demo' : live.data ? 'live' : live.error ? 'error' : 'loading'
 
-  const state = useMemo<BillingState>(() => {
+  const fullState = useMemo<BillingState>(() => {
     if (mode === 'demo') return demo.data ?? seed
     if (mode !== 'live') return EMPTY
     const settings = { ...(local.data ?? DEFAULT_SETTINGS), waterRate: property ? Number(property.defaultWaterRate) || DEFAULT_SETTINGS.waterRate : (local.data ?? DEFAULT_SETTINGS).waterRate }
@@ -548,6 +560,13 @@ export function useBilling() {
     // Live settlements are read per tenancy from the preview endpoint (lib/move-out.ts), so none are kept here.
     return { ...live.data!, charges, settlements: [], settings, seq: 0 }
   }, [mode, demo.data, live.data, local.data, property])
+
+  // Everything is loaded once; switching property only narrows what the pages see.
+  const state = useMemo(() => {
+    if (scopeId === ALL_PROPERTIES) return fullState
+    const houseList: { id: string; propertyId: string }[] = (mode === 'demo' ? demoHouseList : houses) ?? []
+    return scopeToHouses(fullState, new Set(houseList.filter((house) => house.propertyId === scopeId).map((house) => house.id)))
+  }, [fullState, scopeId, mode, demoHouseList, houses])
 
   const ledger = useMemo(() => buildLedger(state), [state])
 

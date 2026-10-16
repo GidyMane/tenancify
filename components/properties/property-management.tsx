@@ -16,7 +16,7 @@ const rowButton = 'h-9 border-slate-300 bg-white px-3 text-slate-700 hover:bg-sl
 
 export function PropertyManagement() {
   const { properties, mode, error, createProperty, updateProperty, deleteProperty } = useProperties()
-  const { houses } = useHouses()
+  const { allHouses: houses } = useHouses()
   const [query, setQuery] = useState('')
   const [dialog, setDialog] = useState<OpenDialog>(null)
 

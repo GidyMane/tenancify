@@ -11,7 +11,8 @@ import { RentCollectionPage } from '@/components/rent/rent-collection-page'
 import { ReportsPage } from '@/components/reports/reports-page'
 import { TenantManagement } from '@/components/tenants/tenant-management'
 import { UtilitiesPage } from '@/components/utilities/utilities-page'
-import { useProperties } from '@/lib/properties'
+import { PropertySwitcher } from '@/components/property-switcher'
+import { usePropertyScope } from '@/lib/property-scope'
 import { useAccounts } from '@/lib/accounts'
 import { useHouses } from '@/lib/houses'
 import { useTenants } from '@/lib/tenants'
@@ -38,13 +39,12 @@ export function RentwiseDashboard() {
   const [active, setActive] = useState<PageId>('dashboard')
   const [mobileOpen, setMobileOpen] = useState(false)
   const [greeting, setGreeting] = useState('Hello')
-  const { properties } = useProperties()
-  const { houses, mode } = useHouses()
+  const { current: currentProperty } = usePropertyScope()
+  const { mode } = useHouses()
   const { accounts, ledger, mode: billingMode, error: billingError } = useAccounts()
   const { mode: tenantsMode, error: tenantsError } = useTenants()
   // The API is reachable but turned us away — almost always a missing or expired sign-in token.
   const apiProblem = mode === 'live' && (tenantsMode === 'error' || billingMode === 'error') ? (tenantsError ?? billingError) : undefined
-  const property = properties[0]
   const { user } = useKindeBrowserClient()
   const userName = [user?.given_name, user?.family_name].filter(Boolean).join(' ') || user?.email || 'there'
   const owing = accounts.filter((account) => ledger.arrears(account.id, today()).amount > 0).length
@@ -76,13 +76,7 @@ export function RentwiseDashboard() {
           </div>
           <button className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close menu"><X className="size-5" /></button>
         </div>
-        <button type="button" onClick={() => navigate('properties')} className="mt-8 flex items-center gap-3 rounded-xl bg-slate-50 px-3 py-3 text-left transition-colors hover:bg-slate-100">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-white text-sm font-semibold text-slate-700 shadow-sm">{property ? initials(property.name) : <Building className="size-4" />}</div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-medium">{properties.length > 1 ? `${properties.length} properties` : property?.name ?? 'No property yet'}</p>
-            <p className="truncate text-xs text-slate-400">{property ? `${houses.length} units${properties.length === 1 && property.address ? ` · ${property.address}` : ''}` : 'Add your first property'}</p>
-          </div>
-        </button>
+        <PropertySwitcher onManage={() => navigate('properties')} />
         <nav className="mt-5 flex-1" aria-label="Main">
           {navGroups.map((group) => (
             <div key={group.label} className="mb-6">
@@ -117,7 +111,7 @@ export function RentwiseDashboard() {
             <button className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Open menu"><Menu className="size-5" /></button>
             <div>
               <p className="text-sm font-medium text-slate-900">{greeting}, {user?.given_name || userName}</p>
-              <p className="hidden text-xs text-slate-400 sm:block">Here&apos;s what&apos;s happening with your property today.</p>
+              <p className="hidden text-xs text-slate-400 sm:block">Here&apos;s what&apos;s happening {currentProperty ? <>at {currentProperty.name}</> : 'across your properties'} today.</p>
             </div>
           </div>
           <div className="flex items-center gap-3">

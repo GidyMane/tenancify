@@ -17,6 +17,7 @@ import { AssignTenantDialog } from './assign-tenant-dialog'
 import { HouseFormDialog } from './house-form-dialog'
 import { PropertyFormDialog } from '@/components/properties/property-form-dialog'
 import { useProperties } from '@/lib/properties'
+import { usePropertyScope } from '@/lib/property-scope'
 
 type OpenDialog = { type: 'details'; house: House | null; propertyId?: string } | { type: 'new-property' } | { type: 'assign'; house: House } | MoveOutAction | null
 
@@ -28,35 +29,35 @@ export function HouseManagement() {
   const { houses, mode, saveHouse, changeStatus, assignTenant } = useHouses()
   const { currentFor, ready: tenanciesReady } = useMoveOuts()
   const { properties, mode: propertiesMode, error: propertiesError, createProperty } = useProperties()
-  const [propertyFilter, setPropertyFilter] = useState<string>('ALL')
   const [statusFilter, setStatusFilter] = useState<HouseStatus | 'ALL'>('ALL')
   const [query, setQuery] = useState('')
   const [dialog, setDialog] = useState<OpenDialog>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
 
   const propertyNames = useMemo(() => new Map(properties.map((property) => [property.id, property.name])), [properties])
-  const showProperty = properties.length > 1
-  const inProperty = useMemo(() => (propertyFilter === 'ALL' ? houses : houses.filter((house) => house.propertyId === propertyFilter)), [houses, propertyFilter])
+  // The sidebar switcher picks the property; with "All properties" each row says which one it's in.
+  const { current: currentProperty } = usePropertyScope()
+  const showProperty = !currentProperty && properties.length > 1
 
   const counts = useMemo(() => {
     const byStatus = new Map<HouseStatus, number>()
-    inProperty.forEach((house) => byStatus.set(house.status, (byStatus.get(house.status) ?? 0) + 1))
+    houses.forEach((house) => byStatus.set(house.status, (byStatus.get(house.status) ?? 0) + 1))
     return byStatus
-  }, [inProperty])
+  }, [houses])
 
   const visibleHouses = useMemo(() => {
     const term = query.trim().toLowerCase()
-    return inProperty.filter((house) =>
+    return houses.filter((house) =>
       (statusFilter === 'ALL' || house.status === statusFilter) &&
       (!term || [house.unitNumber, house.houseType, house.tenant?.name ?? ''].some((value) => value.toLowerCase().includes(term))))
-  }, [inProperty, statusFilter, query])
+  }, [houses, statusFilter, query])
 
   // Houses belong to a property, so with none yet the landlord creates one first and carries on.
   function addHouse() {
     setStatusError(null)
     if (propertiesMode === 'error') return setStatusError(`Properties couldn't be loaded, so no house can be added: ${propertiesError?.message ?? 'unknown error'}`)
     if (!properties.length) return setDialog({ type: 'new-property' })
-    setDialog({ type: 'details', house: null, propertyId: propertyFilter === 'ALL' ? undefined : propertyFilter })
+    setDialog({ type: 'details', house: null, propertyId: currentProperty?.id })
   }
 
   async function updateStatus(house: House, status: HouseStatus) {
@@ -79,20 +80,12 @@ export function HouseManagement() {
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search unit, type or tenant" className="h-10 w-full rounded-xl border border-slate-200 pl-9 pr-3 text-sm outline-none focus:border-slate-950" />
             </label>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              {showProperty && (
-                <select aria-label="Filter by property" value={propertyFilter} onChange={(event) => setPropertyFilter(event.target.value)} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-slate-950">
-                  <option value="ALL">All properties</option>
-                  {properties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}
-                </select>
-              )}
-              <Button onClick={addHouse} disabled={propertiesMode === 'loading'} className="h-10 bg-slate-950 px-4 text-white hover:bg-slate-800">
-                <Plus data-icon="inline-start" />Add house
-              </Button>
-            </div>
+            <Button onClick={addHouse} disabled={propertiesMode === 'loading'} className="h-10 bg-slate-950 px-4 text-white hover:bg-slate-800">
+              <Plus data-icon="inline-start" />Add house
+            </Button>
           </div>
           <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by status">
-            <FilterChip active={statusFilter === 'ALL'} onClick={() => setStatusFilter('ALL')} label="All" count={inProperty.length} />
+            <FilterChip active={statusFilter === 'ALL'} onClick={() => setStatusFilter('ALL')} label="All" count={houses.length} />
             {houseStatuses.map(({ value, label, tone }) => (
               <FilterChip key={value} active={statusFilter === value} onClick={() => setStatusFilter(value)} label={label} count={counts.get(value) ?? 0} dotClass={tone} />
             ))}

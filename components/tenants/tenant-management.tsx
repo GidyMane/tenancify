@@ -16,7 +16,7 @@ const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2)
 
 export function TenantManagement() {
   const { tenants, mode, createTenant, updateTenant, deleteTenant } = useTenants()
-  const { houses } = useHouses()
+  const { allHouses: houses } = useHouses()
   const [statusFilter, setStatusFilter] = useState<TenantStatus | 'ALL'>('ALL')
   const [query, setQuery] = useState('')
   const [dialog, setDialog] = useState<OpenDialog>(null)
