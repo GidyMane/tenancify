@@ -1,17 +1,17 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import useSWR from 'swr'
-import { Building2, Droplets, FileBarChart, Home, LayoutDashboard, Menu, Receipt, Users, WalletCards, X, type LucideIcon } from 'lucide-react'
+import { Building, Building2, Droplets, FileBarChart, Home, LayoutDashboard, Menu, Receipt, Users, WalletCards, X, type LucideIcon } from 'lucide-react'
 import { DashboardPage } from '@/components/dashboard/dashboard-page'
 import { HouseManagement } from '@/components/houses/house-management'
 import { PageHeader } from '@/components/page'
 import { PaymentsPage } from '@/components/payments/payments-page'
+import { PropertyManagement } from '@/components/properties/property-management'
 import { RentCollectionPage } from '@/components/rent/rent-collection-page'
 import { ReportsPage } from '@/components/reports/reports-page'
 import { TenantManagement } from '@/components/tenants/tenant-management'
 import { UtilitiesPage } from '@/components/utilities/utilities-page'
-import { api } from '@/lib/api/client'
+import { useProperties } from '@/lib/properties'
 import { useAccounts } from '@/lib/accounts'
 import { useHouses } from '@/lib/houses'
 import { useTenants } from '@/lib/tenants'
@@ -23,11 +23,11 @@ import { initials } from '@/lib/format'
 import { today } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-export type PageId = 'dashboard' | 'houses' | 'tenants' | 'rent' | 'payments' | 'utilities' | 'reports'
+export type PageId = 'dashboard' | 'properties' | 'houses' | 'tenants' | 'rent' | 'payments' | 'utilities' | 'reports'
 export type Navigate = (page: PageId) => void
 
 const navGroups: { label: string; items: { id: PageId; label: string; icon: LucideIcon }[] }[] = [
-  { label: 'Workspace', items: [{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }, { id: 'houses', label: 'Houses', icon: Building2 }, { id: 'tenants', label: 'Tenants', icon: Users }] },
+  { label: 'Workspace', items: [{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }, { id: 'properties', label: 'Properties', icon: Building }, { id: 'houses', label: 'Houses', icon: Building2 }, { id: 'tenants', label: 'Tenants', icon: Users }] },
   { label: 'Money', items: [{ id: 'rent', label: 'Rent collection', icon: WalletCards }, { id: 'payments', label: 'Payments', icon: Receipt }] },
   { label: 'Services', items: [{ id: 'utilities', label: 'Utilities', icon: Droplets }] },
   { label: 'Insights', items: [{ id: 'reports', label: 'Reports', icon: FileBarChart }] },
@@ -38,13 +38,13 @@ export function RentwiseDashboard() {
   const [active, setActive] = useState<PageId>('dashboard')
   const [mobileOpen, setMobileOpen] = useState(false)
   const [greeting, setGreeting] = useState('Hello')
-  const { data: properties } = useSWR('properties', api.properties)
+  const { properties } = useProperties()
   const { houses, mode } = useHouses()
   const { accounts, ledger, mode: billingMode, error: billingError } = useAccounts()
   const { mode: tenantsMode, error: tenantsError } = useTenants()
   // The API is reachable but turned us away — almost always a missing or expired sign-in token.
   const apiProblem = mode === 'live' && (tenantsMode === 'error' || billingMode === 'error') ? (tenantsError ?? billingError) : undefined
-  const property = properties?.[0]
+  const property = properties[0]
   const { user } = useKindeBrowserClient()
   const userName = [user?.given_name, user?.family_name].filter(Boolean).join(' ') || user?.email || 'there'
   const owing = accounts.filter((account) => ledger.arrears(account.id, today()).amount > 0).length
@@ -76,13 +76,13 @@ export function RentwiseDashboard() {
           </div>
           <button className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close menu"><X className="size-5" /></button>
         </div>
-        <div className="mt-8 flex items-center gap-3 rounded-xl bg-slate-50 px-3 py-3">
-          <div className="flex size-9 items-center justify-center rounded-lg bg-white text-sm font-semibold text-slate-700 shadow-sm">KP</div>
+        <button type="button" onClick={() => navigate('properties')} className="mt-8 flex items-center gap-3 rounded-xl bg-slate-50 px-3 py-3 text-left transition-colors hover:bg-slate-100">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-white text-sm font-semibold text-slate-700 shadow-sm">{property ? initials(property.name) : <Building className="size-4" />}</div>
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium">{property?.name ?? 'Kilimani Properties'}</p>
-            <p className="truncate text-xs text-slate-400">{houses.length} units · {property?.address ?? 'Nairobi'}</p>
+            <p className="truncate text-sm font-medium">{properties.length > 1 ? `${properties.length} properties` : property?.name ?? 'No property yet'}</p>
+            <p className="truncate text-xs text-slate-400">{property ? `${houses.length} units${properties.length === 1 && property.address ? ` · ${property.address}` : ''}` : 'Add your first property'}</p>
           </div>
-        </div>
+        </button>
         <nav className="mt-5 flex-1" aria-label="Main">
           {navGroups.map((group) => (
             <div key={group.label} className="mb-6">
@@ -137,6 +137,12 @@ export function RentwiseDashboard() {
             </div>
           )}
           {active === 'dashboard' && <DashboardPage navigate={navigate} />}
+          {active === 'properties' && (
+            <>
+              <PageHeader title="Properties" description="Add your properties, set each one’s water rate and notice period, and see how its houses are doing." />
+              <PropertyManagement />
+            </>
+          )}
           {active === 'houses' && (
             <>
               <PageHeader title="Houses" description="See every house, update its details and status, and assign tenants." />

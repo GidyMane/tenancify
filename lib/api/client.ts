@@ -41,7 +41,21 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
 type Money = number | string
 type IsoDate = string
 
-export type Property = { id: string; name: string; address: string; location?: string | null; defaultWaterRate: Money; currency: string; ownerId: string }
+export type Property = {
+  id: string
+  name: string
+  address: string
+  location?: string | null
+  description?: string | null
+  defaultWaterRate: Money
+  currency: string
+  defaultNoticePeriodDays?: number
+  ownerId: string
+  owner?: { id: string; name: string | null; kindeId: string }
+  createdAt?: IsoDate
+}
+// The owner comes from the sign-in token, never the body. Names must be unique across the API.
+export type PropertyInput = { name: string; address: string; location?: string | null; description?: string | null; defaultWaterRate?: number; currency?: string; defaultNoticePeriodDays?: number }
 
 export type HouseStatus = 'VACANT' | 'OCCUPIED' | 'RESERVED' | 'NOTICE_GIVEN' | 'MAINTENANCE' | 'INACTIVE'
 export type ApiHouse = {
@@ -169,7 +183,11 @@ const id = encodeURIComponent
 
 export const api = {
   properties: () => apiFetch<Property[]>('/properties'),
-  updateProperty: (propertyId: string, payload: { defaultWaterRate?: number }) => apiFetch<Property>(`/properties/property/${id(propertyId)}`, json('PATCH', payload)),
+  property: (propertyId: string) => apiFetch<Property>(`/properties/property/${id(propertyId)}`),
+  createProperty: (payload: PropertyInput) => apiFetch<Property>('/properties', json('POST', payload)),
+  updateProperty: (propertyId: string, payload: Partial<PropertyInput>) => apiFetch<Property>(`/properties/property/${id(propertyId)}`, json('PATCH', payload)),
+  // Deletes the property's houses too; refused while any of them has tenancy history.
+  deleteProperty: (propertyId: string) => apiFetch<Property>(`/properties/property/${id(propertyId)}`, { method: 'DELETE' }),
 
   houses: (propertyId?: string) => apiFetch<ApiHouse[]>(propertyId ? `/houses/property/${id(propertyId)}` : '/houses'),
   createHouse: (payload: HouseInput & { propertyId: string }) => apiFetch<ApiHouse>('/houses', json('POST', payload)),

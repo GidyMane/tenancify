@@ -15,8 +15,10 @@ import { useMoveOuts } from '@/lib/move-out'
 import { cn } from '@/lib/utils'
 import { AssignTenantDialog } from './assign-tenant-dialog'
 import { HouseFormDialog } from './house-form-dialog'
+import { PropertyFormDialog } from '@/components/properties/property-form-dialog'
+import { useProperties } from '@/lib/properties'
 
-type OpenDialog = { type: 'details'; house: House | null } | { type: 'assign'; house: House } | MoveOutAction | null
+type OpenDialog = { type: 'details'; house: House | null; propertyId?: string } | { type: 'new-property' } | { type: 'assign'; house: House } | MoveOutAction | null
 
 // These follow the tenancy (move-in, notice, vacate), so they can't be picked by hand.
 const TENANCY_STATUSES: HouseStatus[] = ['OCCUPIED', 'NOTICE_GIVEN']
@@ -25,23 +27,37 @@ const rowButton = 'h-9 border-slate-300 bg-white px-3 text-slate-700 hover:bg-sl
 export function HouseManagement() {
   const { houses, mode, saveHouse, changeStatus, assignTenant } = useHouses()
   const { currentFor, ready: tenanciesReady } = useMoveOuts()
+  const { properties, mode: propertiesMode, error: propertiesError, createProperty } = useProperties()
+  const [propertyFilter, setPropertyFilter] = useState<string>('ALL')
   const [statusFilter, setStatusFilter] = useState<HouseStatus | 'ALL'>('ALL')
   const [query, setQuery] = useState('')
   const [dialog, setDialog] = useState<OpenDialog>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
 
+  const propertyNames = useMemo(() => new Map(properties.map((property) => [property.id, property.name])), [properties])
+  const showProperty = properties.length > 1
+  const inProperty = useMemo(() => (propertyFilter === 'ALL' ? houses : houses.filter((house) => house.propertyId === propertyFilter)), [houses, propertyFilter])
+
   const counts = useMemo(() => {
     const byStatus = new Map<HouseStatus, number>()
-    houses.forEach((house) => byStatus.set(house.status, (byStatus.get(house.status) ?? 0) + 1))
+    inProperty.forEach((house) => byStatus.set(house.status, (byStatus.get(house.status) ?? 0) + 1))
     return byStatus
-  }, [houses])
+  }, [inProperty])
 
   const visibleHouses = useMemo(() => {
     const term = query.trim().toLowerCase()
-    return houses.filter((house) =>
+    return inProperty.filter((house) =>
       (statusFilter === 'ALL' || house.status === statusFilter) &&
       (!term || [house.unitNumber, house.houseType, house.tenant?.name ?? ''].some((value) => value.toLowerCase().includes(term))))
-  }, [houses, statusFilter, query])
+  }, [inProperty, statusFilter, query])
+
+  // Houses belong to a property, so with none yet the landlord creates one first and carries on.
+  function addHouse() {
+    setStatusError(null)
+    if (propertiesMode === 'error') return setStatusError(`Properties couldn't be loaded, so no house can be added: ${propertiesError?.message ?? 'unknown error'}`)
+    if (!properties.length) return setDialog({ type: 'new-property' })
+    setDialog({ type: 'details', house: null, propertyId: propertyFilter === 'ALL' ? undefined : propertyFilter })
+  }
 
   async function updateStatus(house: House, status: HouseStatus) {
     setStatusError(null)
@@ -63,12 +79,20 @@ export function HouseManagement() {
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search unit, type or tenant" className="h-10 w-full rounded-xl border border-slate-200 pl-9 pr-3 text-sm outline-none focus:border-slate-950" />
             </label>
-            <Button onClick={() => setDialog({ type: 'details', house: null })} className="h-10 bg-slate-950 px-4 text-white hover:bg-slate-800">
-              <Plus data-icon="inline-start" />Add house
-            </Button>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              {showProperty && (
+                <select aria-label="Filter by property" value={propertyFilter} onChange={(event) => setPropertyFilter(event.target.value)} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-slate-950">
+                  <option value="ALL">All properties</option>
+                  {properties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}
+                </select>
+              )}
+              <Button onClick={addHouse} disabled={propertiesMode === 'loading'} className="h-10 bg-slate-950 px-4 text-white hover:bg-slate-800">
+                <Plus data-icon="inline-start" />Add house
+              </Button>
+            </div>
           </div>
           <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by status">
-            <FilterChip active={statusFilter === 'ALL'} onClick={() => setStatusFilter('ALL')} label="All" count={houses.length} />
+            <FilterChip active={statusFilter === 'ALL'} onClick={() => setStatusFilter('ALL')} label="All" count={inProperty.length} />
             {houseStatuses.map(({ value, label, tone }) => (
               <FilterChip key={value} active={statusFilter === value} onClick={() => setStatusFilter(value)} label={label} count={counts.get(value) ?? 0} dotClass={tone} />
             ))}
@@ -96,7 +120,7 @@ export function HouseManagement() {
                   <tr key={house.id} className="hover:bg-slate-50/60">
                     <td className="px-5 py-4">
                       <p className="font-semibold text-slate-900">{house.unitNumber}</p>
-                      <p className="text-xs text-slate-400">{house.houseType || 'Type not set'}</p>
+                      <p className="text-xs text-slate-400">{house.houseType || 'Type not set'}{showProperty && ` · ${propertyNames.get(house.propertyId) ?? 'Unknown property'}`}</p>
                     </td>
                     <td className="px-5 py-4">
                       {house.tenant ? (
@@ -148,12 +172,24 @@ export function HouseManagement() {
           </table>
           {!visibleHouses.length && (
             <p className="px-5 py-12 text-center text-sm text-slate-400">
-              {mode === 'loading' ? 'Loading houses…' : houses.length ? 'No houses match your filters.' : 'No houses yet. Add your first house to get started.'}
+              {mode === 'loading' ? 'Loading houses…' : houses.length ? 'No houses match your filters.' : propertiesMode !== 'loading' && !properties.length ? 'No properties yet. Click “Add house” to create your first property, then its houses.' : 'No houses yet. Add your first house to get started.'}
             </p>
           )}
         </div>
 
-        {dialog?.type === 'details' && <HouseFormDialog house={dialog.house} onSave={(details) => saveHouse(dialog.house, details)} onClose={() => setDialog(null)} />}
+        {dialog?.type === 'details' && <HouseFormDialog house={dialog.house} properties={properties} defaultPropertyId={dialog.propertyId} onSave={(details, propertyId) => saveHouse(dialog.house, details, propertyId)} onClose={() => setDialog(null)} />}
+        {dialog?.type === 'new-property' && (
+          <PropertyFormDialog
+            property={null}
+            description="Houses belong to a property. Create your first one, then you’ll go straight on to adding the house."
+            onSave={async (details) => {
+              const created = await createProperty(details)
+              // Deferred so it runs after the property form's onClose, which would otherwise clear it.
+              setTimeout(() => setDialog({ type: 'details', house: null, propertyId: created.id }))
+            }}
+            onClose={() => setDialog((current) => (current?.type === 'new-property' ? null : current))}
+          />
+        )}
         {dialog?.type === 'assign' && <AssignTenantDialog house={dialog.house} onAssign={(assignment) => assignTenant(dialog.house, assignment)} onClose={() => setDialog(null)} />}
         {dialog?.type === 'notice' && <NoticeDialog account={dialog.account} onClose={() => setDialog(null)} />}
         {dialog?.type === 'move-out' && <MoveOutDialog account={dialog.account} onClose={() => setDialog(null)} />}

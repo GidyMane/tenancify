@@ -3,13 +3,24 @@
 import { useState, type FormEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import type { House, HouseDetails } from '@/lib/houses'
+import type { Property } from '@/lib/properties'
 import { Dialog, Field, FormError, errorMessage, inputClass } from '@/components/dialog'
 
 const houseTypes = ['Bedsitter', 'Studio', '1 Bedroom', '2 Bedroom', '3 Bedroom', 'Maisonette']
 
 const emptyDetails: HouseDetails = { unitNumber: '', houseType: '', waterMeterNumber: '', electricityMeterNumber: '', defaultMonthlyRent: 0, defaultDepositAmount: 0, notes: '' }
 
-export function HouseFormDialog({ house, onSave, onClose }: { house: House | null; onSave: (details: HouseDetails) => Promise<void>; onClose: () => void }) {
+type Props = {
+  house: House | null
+  /** Only used when adding: a house can't move to another property. */
+  properties: Property[]
+  defaultPropertyId?: string
+  onSave: (details: HouseDetails, propertyId: string) => Promise<void>
+  onClose: () => void
+}
+
+export function HouseFormDialog({ house, properties, defaultPropertyId, onSave, onClose }: Props) {
+  const [propertyId, setPropertyId] = useState(() => house?.propertyId ?? defaultPropertyId ?? properties[0]?.id ?? '')
   const [details, setDetails] = useState<HouseDetails>(() => {
     if (!house) return emptyDetails
     const { unitNumber, houseType, waterMeterNumber, electricityMeterNumber, defaultMonthlyRent, defaultDepositAmount, notes } = house
@@ -26,7 +37,7 @@ export function HouseFormDialog({ house, onSave, onClose }: { house: House | nul
     setSaving(true)
     setError(null)
     try {
-      await onSave(details)
+      await onSave(details, propertyId)
       onClose()
     } catch (err) {
       setError(errorMessage(err))
@@ -43,6 +54,13 @@ export function HouseFormDialog({ house, onSave, onClose }: { house: House | nul
     >
       <form className="mt-6 flex flex-col gap-5" onSubmit={submit}>
         <div className="grid gap-5 sm:grid-cols-2">
+          {!house && (
+            <Field label="Property" hint={properties.length > 1 ? undefined : 'Add more properties from the Properties page.'} className="sm:col-span-2">
+              <select required value={propertyId} onChange={(event) => setPropertyId(event.target.value)} className={inputClass}>
+                {properties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}
+              </select>
+            </Field>
+          )}
           <Field label="Unit number">
             <input required autoFocus value={details.unitNumber} onChange={set('unitNumber')} placeholder="e.g. H09" className={inputClass} />
           </Field>

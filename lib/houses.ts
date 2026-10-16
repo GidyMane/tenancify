@@ -95,7 +95,6 @@ function toPayload(details: HouseDetails, metadata: Record<string, unknown>) {
 export function useHouses() {
   const live = useSWR('houses', () => api.houses())
   const demo = useSWR<House[]>('demo-houses', null, { fallbackData: demoHouses })
-  const { data: properties } = useSWR('properties', api.properties)
   const { tenants, mode: tenantsMode, createTenant } = useTenants()
   const billing = useBilling()
 
@@ -105,14 +104,13 @@ export function useHouses() {
   const updateDemo = (houseId: string, change: Partial<House>) =>
     demo.mutate((current = demoHouses) => current.map((house) => (house.id === houseId ? { ...house, ...change } : house)), { revalidate: false })
 
-  async function saveHouse(house: House | null, details: HouseDetails) {
+  async function saveHouse(house: House | null, details: HouseDetails, propertyId?: string) {
     if (mode === 'live') {
       const payload = toPayload(details, house?.metadata ?? {})
       if (house) {
         await api.updateHouse(house.id, payload)
       } else {
-        const propertyId = properties?.[0]?.id
-        if (!propertyId) throw new Error('Create a property before adding houses.')
+        if (!propertyId) throw new Error('Choose which property this house belongs to.')
         await api.createHouse({ ...payload, propertyId })
       }
       await live.mutate()
@@ -120,7 +118,7 @@ export function useHouses() {
       await updateDemo(house.id, details)
     } else {
       // New houses always start vacant, matching the API.
-      const created: House = { ...details, id: `demo-${Date.now()}`, propertyId: 'demo-property', status: 'VACANT', tenant: null, metadata: {} }
+      const created: House = { ...details, id: `demo-${Date.now()}`, propertyId: propertyId ?? 'demo-property', status: 'VACANT', tenant: null, metadata: {} }
       await demo.mutate((current = demoHouses) => [...current, created], { revalidate: false })
     }
   }

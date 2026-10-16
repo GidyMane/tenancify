@@ -1,6 +1,11 @@
 // Sample records shown when the API is unreachable, so every screen stays usable offline.
 import type { House } from '@/lib/houses'
+import type { Property } from '@/lib/properties'
 import type { Tenant } from '@/lib/tenants'
+
+export const demoProperties: Property[] = [
+  { id: 'demo-property', name: 'Kilimani Properties', address: 'Argwings Kodhek Rd', location: 'Kilimani, Nairobi', description: 'Mixed bedsitters and family units.', defaultWaterRate: 150, currency: 'KES', defaultNoticePeriodDays: 30, createdAt: '2025-01-06T00:00:00.000Z' },
+]
 
 const tenant = (id: string, fullName: string, phone: string, details: Partial<Tenant> = {}): Tenant => ({
   id: `demo-tenant-${id}`,
